@@ -33,7 +33,7 @@ def configure_app(
 ) -> None:
     config = build_config()
     resolved_level = "DEBUG" if debug else (log_level or config.log_level)
-    configure_logging(resolved_level)
+    configure_logging(resolved_level, force=True)
     debug_event(
         logger,
         "application_started",
