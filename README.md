@@ -33,6 +33,27 @@ psalter psalm show PSALM_NUMBER
 psalter settings
 ```
 
+## Debug logging
+
+Application diagnostics are disabled during normal use. Enable debug logs on stderr for one
+invocation with:
+
+```bash
+uv run psalter --debug init --resume
+```
+
+Or configure a persistent minimum level:
+
+```bash
+export PSALTER_LOG_LEVEL=DEBUG
+uv run psalter progress
+```
+
+`--log-level` overrides the environment for one invocation. Debug events cover application
+startup, dependency composition, scripture-provider requests, catalog acquisition, and other
+application boundaries. Recitation text, Psalm contents, model files, and audio contents are not
+written to logs.
+
 ## Recovery
 
 If installation is interrupted:
