@@ -7,11 +7,13 @@ from datetime import UTC, datetime
 from psalter.application.errors import (
     ApplicationError,
     CatalogInstallationFailedError,
+    CatalogRepairUnsafeError,
     CatalogValidationFailedError,
     InstallationAlreadyReadyError,
     InstallationIncompleteError,
     InstallationNotReadyError,
     PsalmPayloadInvalidError,
+    TranslationChangeBlockedError,
     TranslationNotSupportedError,
 )
 from psalter.application.services.psalm import build_complete_psalm_bundle
@@ -103,6 +105,11 @@ class PsalmCatalogInstaller:
         translations = self.list_translations()
         selected = _resolve_translation(translations, translation_id)
         current = self._settings.get_settings()
+        changing_translation = (
+            current is not None
+            and current.default_translation_id is not None
+            and current.default_translation_id.casefold() != selected.id.casefold()
+        )
         if (
             current is not None
             and current.catalog_status is CatalogStatus.READY
@@ -114,6 +121,19 @@ class PsalmCatalogInstaller:
             raise InstallationAlreadyReadyError(
                 f"Psalter is already initialized with {current.default_translation_id}."
             )
+        if changing_translation and current is not None:
+            if self._committer.has_any_learning_history():
+                raise TranslationChangeBlockedError(
+                    "Cannot replace the installed translation because learning history exists.\n"
+                    "Translation migration and multi-translation support are not implemented."
+                )
+            if not repair:
+                raise TranslationChangeBlockedError(
+                    "Translation replacement requires explicit repair mode.\n"
+                    f"Run `psalter init --translation {selected.id} --repair`."
+                )
+            if current.default_translation_id is not None:
+                self._committer.clear_translation_catalog(current.default_translation_id)
 
         base = current or InstallationSettings(
             id=_DEFAULT_INSTALLATION_ID,
@@ -126,12 +146,20 @@ class PsalmCatalogInstaller:
             updated_at=now,
             last_error=None,
         )
-        installing = base.begin_installation(
-            scripture_provider=self._provider_name,
-            translation_id=selected.id,
-            translation_name=selected.name,
-            when=now,
-        )
+        if base.catalog_status is CatalogStatus.READY and (repair or changing_translation):
+            installing = base.restart_installation(
+                scripture_provider=self._provider_name,
+                translation_id=selected.id,
+                translation_name=selected.name,
+                when=now,
+            )
+        else:
+            installing = base.begin_installation(
+                scripture_provider=self._provider_name,
+                translation_id=selected.id,
+                translation_name=selected.name,
+                when=now,
+            )
         self._settings.upsert(installing)
 
         imported = 0
@@ -140,17 +168,30 @@ class PsalmCatalogInstaller:
         for psalm_number in self._required_psalm_numbers:
             should_skip = (
                 psalm_number in imported_numbers
-                and not repair
                 and self._is_psalm_bundle_valid(selected.id, psalm_number)
             )
             if should_skip:
                 skipped += 1
                 continue
-            if not repair and self._is_psalm_bundle_valid(selected.id, psalm_number):
+            if self._is_psalm_bundle_valid(selected.id, psalm_number):
                 self._progress.mark_imported(installing.id, psalm_number)
                 imported_numbers.add(psalm_number)
                 skipped += 1
                 continue
+            existing = self._psalms.get_by_translation_and_number(selected.id, psalm_number)
+            if (
+                repair
+                and existing is not None
+                and self._committer.has_psalm_learning_history(existing.id)
+            ):
+                reason = (
+                    f"Repair refused for Psalm {psalm_number} ({selected.id}) because learning "
+                    "history exists."
+                )
+                self._progress.mark_failed(installing.id, psalm_number, reason)
+                failed = installing.mark_failed(reason=reason, when=self._clock.now())
+                self._settings.upsert(failed)
+                raise CatalogRepairUnsafeError(reason)
             self._progress.mark_pending(installing.id, psalm_number)
             try:
                 imported_psalm = self._provider.fetch_psalm(selected.id, psalm_number)

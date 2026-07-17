@@ -138,6 +138,10 @@ class CatalogValidationFailedError(ApplicationError):
     """Raised when catalog import validation fails."""
 
 
+class CatalogRepairUnsafeError(ApplicationError):
+    """Raised when repair would invalidate learning history."""
+
+
 class ScriptureProviderUnavailableError(ApplicationError):
     """Raised when the scripture provider is unavailable."""
 
@@ -152,3 +156,7 @@ class PsalmDownloadFailedError(ApplicationError):
 
 class PsalmPayloadInvalidError(ApplicationError):
     """Raised when provider Psalm payload is malformed."""
+
+
+class TranslationChangeBlockedError(ApplicationError):
+    """Raised when translation replacement is blocked by policy."""

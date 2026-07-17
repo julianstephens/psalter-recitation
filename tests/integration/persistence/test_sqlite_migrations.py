@@ -422,3 +422,142 @@ def test_migration_rejects_legacy_orphan_attempts_without_sessions(tmp_path: Pat
     assert legacy_attempt_count is not None
     assert int(legacy_attempt_count["n"]) == 1
     assert "updated_at" not in {str(item["name"]) for item in learning_columns}
+
+
+def test_migration_does_not_mark_ready_for_partial_150_psalm_catalog(tmp_path: Path) -> None:
+    db, staged_migrations = _db_after_003(tmp_path)
+    with db.open_connection() as conn, conn:
+        for psalm_number in range(1, 151):
+            psalm_id = f"esv-psalm-{psalm_number}"
+            text = f"Psalm {psalm_number}:1"
+            conn.execute(
+                """
+                INSERT INTO psalms(
+                    id, translation_id, psalm_number, canonical_text, verse_count, completeness
+                )
+                VALUES (?, 'esv', ?, ?, 1, 'partial')
+                """,
+                (psalm_id, psalm_number, text),
+            )
+            conn.execute(
+                """
+                INSERT INTO passages(
+                    id, psalm_id, translation_id, psalm_number, start_verse, end_verse,
+                    canonical_text, sequence_number, kind, segmentation_policy_version
+                ) VALUES (?, ?, 'esv', ?, 1, 1, ?, 1, 'section', NULL)
+                """,
+                (f"{psalm_id}-1-1", psalm_id, psalm_number, text),
+            )
+    _apply_004(db, staged_migrations)
+    with db.open_connection() as conn:
+        row = conn.execute(
+            "SELECT catalog_status, default_translation_id FROM installation_settings WHERE id = 1"
+        ).fetchone()
+    assert row is not None
+    assert str(row["catalog_status"]) == "failed"
+    assert row["default_translation_id"] is None
+
+
+def test_migration_does_not_mark_ready_when_150_rows_are_wrong_numbers(tmp_path: Path) -> None:
+    db, staged_migrations = _db_after_003(tmp_path)
+    numbers = list(range(1, 150)) + [151]
+    with db.open_connection() as conn, conn:
+        _insert_minimal_complete_catalog(conn, translation_id="esv", psalm_numbers=numbers)
+    _apply_004(db, staged_migrations)
+    with db.open_connection() as conn:
+        row = conn.execute(
+            "SELECT catalog_status, default_translation_id FROM installation_settings WHERE id = 1"
+        ).fetchone()
+    assert row is not None
+    assert str(row["catalog_status"]) == "failed"
+    assert row["default_translation_id"] is None
+
+
+def test_migration_does_not_mark_ready_when_consolidation_is_missing(tmp_path: Path) -> None:
+    db, staged_migrations = _db_after_003(tmp_path)
+    with db.open_connection() as conn, conn:
+        _insert_minimal_complete_catalog(conn, translation_id="esv", psalm_numbers=range(1, 151))
+        conn.execute(
+            "DELETE FROM passages WHERE psalm_id = 'esv-psalm-90' AND kind = 'consolidation'"
+        )
+    _apply_004(db, staged_migrations)
+    with db.open_connection() as conn:
+        row = conn.execute(
+            "SELECT catalog_status, default_translation_id FROM installation_settings WHERE id = 1"
+        ).fetchone()
+    assert row is not None
+    assert str(row["catalog_status"]) == "failed"
+    assert row["default_translation_id"] is None
+
+
+def _db_after_003(tmp_path: Path) -> tuple[SqliteDatabase, Path]:
+    db = SqliteDatabase(path=tmp_path / "test.db")
+    staged_migrations = tmp_path / "staged-migrations-004"
+    staged_migrations.mkdir()
+    shutil.copy(migrations_dir() / "001_initial.sql", staged_migrations / "001_initial.sql")
+    shutil.copy(
+        migrations_dir() / "002_learning_vertical_slice.sql",
+        staged_migrations / "002_learning_vertical_slice.sql",
+    )
+    shutil.copy(migrations_dir() / "003_psalm_first.sql", staged_migrations / "003_psalm_first.sql")
+    migrator = SqliteMigrator(db, staged_migrations)
+    assert migrator.apply_pending() == [
+        "001_initial.sql",
+        "002_learning_vertical_slice.sql",
+        "003_psalm_first.sql",
+    ]
+    return db, staged_migrations
+
+
+def _apply_004(db: SqliteDatabase, staged_migrations: Path) -> None:
+    shutil.copy(
+        migrations_dir() / "004_installation_settings.sql",
+        staged_migrations / "004_installation_settings.sql",
+    )
+    migrator = SqliteMigrator(db, staged_migrations)
+    assert migrator.apply_pending() == ["004_installation_settings.sql"]
+
+
+def _insert_minimal_complete_catalog(
+    conn: sqlite3.Connection,
+    *,
+    translation_id: str,
+    psalm_numbers: range | list[int],
+) -> None:
+    for psalm_number in psalm_numbers:
+        psalm_id = f"{translation_id}-psalm-{psalm_number}"
+        text = f"{translation_id.upper()} Psalm {psalm_number}:1"
+        conn.execute(
+            """
+            INSERT INTO psalms(
+                id, translation_id, psalm_number, canonical_text, verse_count, completeness
+            )
+            VALUES (?, ?, ?, ?, 1, 'complete')
+            """,
+            (psalm_id, translation_id, psalm_number, text),
+        )
+        conn.execute(
+            """
+            INSERT INTO psalm_verses(psalm_id, verse_number, canonical_text)
+            VALUES (?, 1, ?)
+            """,
+            (psalm_id, text),
+        )
+        conn.execute(
+            """
+            INSERT INTO passages(
+                id, psalm_id, translation_id, psalm_number, start_verse, end_verse,
+                canonical_text, sequence_number, kind, segmentation_policy_version
+            ) VALUES (?, ?, ?, ?, 1, 1, ?, 1, 'section', 'legacy-migration-v1')
+            """,
+            (f"{psalm_id}-1-1", psalm_id, translation_id, psalm_number, text),
+        )
+        conn.execute(
+            """
+            INSERT INTO passages(
+                id, psalm_id, translation_id, psalm_number, start_verse, end_verse,
+                canonical_text, sequence_number, kind, segmentation_policy_version
+            ) VALUES (?, ?, ?, ?, 1, 1, ?, 2, 'consolidation', 'legacy-migration-v1')
+            """,
+            (f"{psalm_id}-consolidation", psalm_id, translation_id, psalm_number, text),
+        )

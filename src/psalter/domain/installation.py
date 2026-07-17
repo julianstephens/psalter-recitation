@@ -59,6 +59,24 @@ class InstallationSettings:
             last_error=None,
         )
 
+    def restart_installation(
+        self,
+        *,
+        scripture_provider: str,
+        translation_id: str,
+        translation_name: str,
+        when: datetime,
+    ) -> InstallationSettings:
+        return replace(
+            self,
+            scripture_provider=scripture_provider,
+            default_translation_id=translation_id,
+            default_translation_name=translation_name,
+            catalog_status=CatalogStatus.INSTALLING,
+            updated_at=when,
+            last_error=None,
+        )
+
     def mark_ready(
         self,
         *,

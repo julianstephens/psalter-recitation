@@ -279,3 +279,99 @@ class SqlitePsalmCatalogCommitter:
                 conn.rollback()
                 raise
             conn.commit()
+
+    def has_psalm_learning_history(self, psalm_id: str) -> bool:
+        with self._db.open_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT EXISTS(
+                    SELECT 1
+                    FROM learning_sessions ls
+                    JOIN passages p ON p.id = ls.passage_id
+                    WHERE p.psalm_id = ?
+                ) AS has_history
+                """,
+                (psalm_id,),
+            ).fetchone()
+            if row and int(row["has_history"]) == 1:
+                return True
+            row = conn.execute(
+                """
+                SELECT EXISTS(
+                    SELECT 1
+                    FROM recitation_attempts ra
+                    JOIN passages p ON p.id = ra.passage_id
+                    WHERE p.psalm_id = ?
+                ) AS has_history
+                """,
+                (psalm_id,),
+            ).fetchone()
+            if row and int(row["has_history"]) == 1:
+                return True
+            row = conn.execute(
+                """
+                SELECT EXISTS(
+                    SELECT 1
+                    FROM review_states rs
+                    JOIN passages p ON p.id = rs.passage_id
+                    WHERE p.psalm_id = ?
+                ) AS has_history
+                """,
+                (psalm_id,),
+            ).fetchone()
+            if row and int(row["has_history"]) == 1:
+                return True
+            row = conn.execute(
+                """
+                SELECT EXISTS(
+                    SELECT 1
+                    FROM psalm_learning_plans
+                    WHERE psalm_id = ?
+                ) AS has_history
+                """,
+                (psalm_id,),
+            ).fetchone()
+        return bool(row and int(row["has_history"]) == 1)
+
+    def has_any_learning_history(self) -> bool:
+        with self._db.open_connection() as conn:
+            checks = (
+                "SELECT EXISTS(SELECT 1 FROM learning_sessions) AS has_history",
+                "SELECT EXISTS(SELECT 1 FROM recitation_attempts) AS has_history",
+                "SELECT EXISTS(SELECT 1 FROM review_states) AS has_history",
+                "SELECT EXISTS(SELECT 1 FROM psalm_learning_plans) AS has_history",
+            )
+            for query in checks:
+                row = conn.execute(query).fetchone()
+                if row and int(row["has_history"]) == 1:
+                    return True
+        return False
+
+    def clear_translation_catalog(self, translation_id: str) -> None:
+        with self._db.open_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                conn.execute(
+                    "DELETE FROM catalog_import_progress WHERE installation_id = 1"
+                )
+                conn.execute(
+                    """
+                    DELETE FROM passages
+                    WHERE translation_id = ?
+                    """,
+                    (translation_id,),
+                )
+                conn.execute(
+                    """
+                    DELETE FROM psalm_verses
+                    WHERE psalm_id IN (
+                        SELECT id FROM psalms WHERE translation_id = ?
+                    )
+                    """,
+                    (translation_id,),
+                )
+                conn.execute("DELETE FROM psalms WHERE translation_id = ?", (translation_id,))
+            except sqlite3.Error:
+                conn.rollback()
+                raise
+            conn.commit()
