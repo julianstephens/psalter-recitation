@@ -56,3 +56,15 @@ def test_failed_installation_transition_preserves_reason() -> None:
     )
     assert failed.catalog_status is CatalogStatus.FAILED
     assert failed.last_error == "Failed to import Psalm 119 from BSB"
+
+
+def test_ready_installation_can_change_default_translation() -> None:
+    ready = _settings(CatalogStatus.READY)
+    updated = ready.change_default_translation(
+        translation_id="KJV",
+        translation_name="King James Version",
+        when=datetime(2026, 1, 2, tzinfo=UTC),
+    )
+    assert updated.default_translation_id == "KJV"
+    assert updated.default_translation_name == "King James Version"
+    assert updated.catalog_status is CatalogStatus.READY

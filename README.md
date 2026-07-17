@@ -12,9 +12,12 @@ uv run psalter progress
 uv run psalter review
 ```
 
-`psalter init` installs one complete translation catalog (Psalms 1-150), preserves verse
-boundaries, generates internal learning sections, and stores the selected translation as the
+`psalter init` installs a complete translation catalog (Psalms 1-150), preserves verse
+boundaries, generates internal learning sections, and stores one selected translation as the
 default.
+
+Additional translations can also be installed. The Psalter keeps exactly one default
+translation for normal commands like `psalter learn 90`.
 
 After initialization, `psalter learn 90` works without a translation flag.
 
@@ -66,6 +69,12 @@ To repair missing or invalid Psalm bundles:
 
 ```bash
 uv run psalter init --repair
+```
+
+To install another translation and make it the default without an interactive prompt:
+
+```bash
+uv run psalter init --translation KJV --set-default
 ```
 
 ## Advanced

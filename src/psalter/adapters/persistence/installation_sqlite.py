@@ -7,6 +7,7 @@ from psalter.adapters.persistence.sqlite import SqliteDatabase
 from psalter.domain.installation import CatalogStatus, InstallationSettings
 from psalter.domain.passage import Passage
 from psalter.domain.psalm import Psalm
+from psalter.ports.installation_repository import InstalledTranslation
 
 
 def _dt_to_str(value: datetime | None) -> str | None:
@@ -112,42 +113,51 @@ class SqliteCatalogImportProgressRepository:
     def __init__(self, database: SqliteDatabase) -> None:
         self._db = database
 
-    def mark_pending(self, installation_id: int, psalm_number: int) -> None:
+    def mark_pending(self, installation_id: int, translation_id: str, psalm_number: int) -> None:
         self._upsert(
             installation_id=installation_id,
+            translation_id=translation_id,
             psalm_number=psalm_number,
             status="pending",
             error=None,
             imported_at=None,
         )
 
-    def mark_imported(self, installation_id: int, psalm_number: int) -> None:
+    def mark_imported(self, installation_id: int, translation_id: str, psalm_number: int) -> None:
         self._upsert(
             installation_id=installation_id,
+            translation_id=translation_id,
             psalm_number=psalm_number,
             status="imported",
             error=None,
             imported_at=_dt_to_str(datetime.now(UTC)),
         )
 
-    def mark_failed(self, installation_id: int, psalm_number: int, error: str) -> None:
+    def mark_failed(
+        self,
+        installation_id: int,
+        translation_id: str,
+        psalm_number: int,
+        error: str,
+    ) -> None:
         self._upsert(
             installation_id=installation_id,
+            translation_id=translation_id,
             psalm_number=psalm_number,
             status="failed",
             error=error,
             imported_at=None,
         )
 
-    def list_imported_psalm_numbers(self, installation_id: int) -> set[int]:
+    def list_imported_psalm_numbers(self, installation_id: int, translation_id: str) -> set[int]:
         with self._db.open_connection() as conn:
             rows = conn.execute(
                 """
                 SELECT psalm_number
                 FROM catalog_import_progress
-                WHERE installation_id = ? AND status = 'imported'
+                WHERE installation_id = ? AND translation_id = ? AND status = 'imported'
                 """,
-                (installation_id,),
+                (installation_id, translation_id),
             ).fetchall()
         return {int(row["psalm_number"]) for row in rows}
 
@@ -155,6 +165,7 @@ class SqliteCatalogImportProgressRepository:
         self,
         *,
         installation_id: int,
+        translation_id: str,
         psalm_number: int,
         status: str,
         error: str | None,
@@ -165,18 +176,20 @@ class SqliteCatalogImportProgressRepository:
                 """
                 INSERT INTO catalog_import_progress(
                     installation_id,
+                    translation_id,
                     psalm_number,
                     status,
                     imported_at,
                     error
-                ) VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(installation_id, psalm_number) DO UPDATE SET
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(installation_id, translation_id, psalm_number) DO UPDATE SET
                     status = excluded.status,
                     imported_at = excluded.imported_at,
                     error = excluded.error
                 """,
                 (
                     installation_id,
+                    translation_id,
                     psalm_number,
                     status,
                     imported_at,
@@ -259,18 +272,20 @@ class SqlitePsalmCatalogCommitter:
                     """
                     INSERT INTO catalog_import_progress(
                         installation_id,
+                        translation_id,
                         psalm_number,
                         status,
                         imported_at,
                         error
-                    ) VALUES (?, ?, 'imported', ?, NULL)
-                    ON CONFLICT(installation_id, psalm_number) DO UPDATE SET
+                    ) VALUES (?, ?, ?, 'imported', ?, NULL)
+                    ON CONFLICT(installation_id, translation_id, psalm_number) DO UPDATE SET
                         status = 'imported',
                         imported_at = excluded.imported_at,
                         error = NULL
                     """,
                     (
                         installation_id,
+                        psalm.translation_id,
                         psalm.psalm_number,
                         _dt_to_str(datetime.now(UTC)),
                     ),
@@ -352,7 +367,11 @@ class SqlitePsalmCatalogCommitter:
             conn.execute("BEGIN IMMEDIATE")
             try:
                 conn.execute(
-                    "DELETE FROM catalog_import_progress WHERE installation_id = 1"
+                    """
+                    DELETE FROM catalog_import_progress
+                    WHERE installation_id = 1 AND translation_id = ?
+                    """,
+                    (translation_id,),
                 )
                 conn.execute(
                     """
@@ -375,3 +394,21 @@ class SqlitePsalmCatalogCommitter:
                 conn.rollback()
                 raise
             conn.commit()
+
+    def list_installed_translations(self) -> tuple[InstalledTranslation, ...]:
+        with self._db.open_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT translation_id, COUNT(*) AS psalm_count
+                FROM psalms
+                GROUP BY translation_id
+                ORDER BY translation_id ASC
+                """
+            ).fetchall()
+        return tuple(
+            InstalledTranslation(
+                translation_id=str(row["translation_id"]),
+                psalm_count=int(row["psalm_count"]),
+            )
+            for row in rows
+        )

@@ -77,6 +77,25 @@ class InstallationSettings:
             last_error=None,
         )
 
+    def change_default_translation(
+        self,
+        *,
+        translation_id: str,
+        translation_name: str,
+        when: datetime,
+    ) -> InstallationSettings:
+        if self.catalog_status is not CatalogStatus.READY:
+            raise InvalidTransitionError(
+                "Default translation can only change on a ready installation"
+            )
+        return replace(
+            self,
+            default_translation_id=translation_id,
+            default_translation_name=translation_name,
+            updated_at=when,
+            last_error=None,
+        )
+
     def mark_ready(
         self,
         *,
@@ -91,6 +110,15 @@ class InstallationSettings:
             updated_at=when,
             last_error=None,
         )
+
+    def clear_last_error(self, *, when: datetime) -> InstallationSettings:
+        return replace(self, updated_at=when, last_error=None)
+
+    def record_last_error(self, *, reason: str, when: datetime) -> InstallationSettings:
+        message = reason.strip()
+        if not message:
+            raise InvariantViolationError("Failure reason must not be blank")
+        return replace(self, updated_at=when, last_error=message)
 
     def mark_failed(self, *, reason: str, when: datetime) -> InstallationSettings:
         message = reason.strip()

@@ -2,6 +2,7 @@ import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from psalter.cli.app import app
@@ -65,7 +66,12 @@ def test_reinit_reports_existing_ready_installation(tmp_path: Path) -> None:
     runner = CliRunner()
     _init_catalog(runner, tmp_path)
 
-    result = runner.invoke(app, ["init", "--data-dir", str(tmp_path)], env=_env())
+    result = runner.invoke(
+        app,
+        ["init", "--data-dir", str(tmp_path)],
+        input="1\n",
+        env=_env(),
+    )
     assert result.exit_code == 0
     assert "already initialized with BSB" in result.output
 
@@ -79,17 +85,43 @@ def test_translation_change_requires_explicit_replacement_mode(tmp_path: Path) -
         ["init", "--translation", "KJV", "--data-dir", str(tmp_path)],
         env=_env(),
     )
-    assert result.exit_code == 1
-    assert "Translation replacement requires explicit repair mode." in result.output
+    assert result.exit_code == 0
+    settings = runner.invoke(app, ["settings", "--data-dir", str(tmp_path)], env=_env())
+    assert settings.exit_code == 0
+    assert "Default translation: BSB" in settings.output
+    assert "KJV - 150 Psalms" in settings.output
 
 
-def test_translation_change_with_repair_updates_default_when_no_history(tmp_path: Path) -> None:
+def test_translation_change_with_set_default_updates_default_when_no_history(
+    tmp_path: Path,
+) -> None:
     runner = CliRunner()
     _init_catalog(runner, tmp_path)
 
     result = runner.invoke(
         app,
-        ["init", "--translation", "KJV", "--repair", "--data-dir", str(tmp_path)],
+        ["init", "--translation", "KJV", "--set-default", "--data-dir", str(tmp_path)],
+        env=_env(),
+    )
+    assert result.exit_code == 0
+    settings = runner.invoke(app, ["settings", "--data-dir", str(tmp_path)], env=_env())
+    assert settings.exit_code == 0
+    assert "Default translation: KJV" in settings.output
+    assert "BSB - 150 Psalms" in settings.output
+
+
+def test_interactive_second_translation_prompt_can_switch_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = CliRunner()
+    _init_catalog(runner, tmp_path)
+    monkeypatch.setattr("psalter.cli.commands.init.sys.stdin.isatty", lambda: True)
+
+    result = runner.invoke(
+        app,
+        ["init", "--data-dir", str(tmp_path)],
+        input="2\ny\n",
         env=_env(),
     )
     assert result.exit_code == 0
@@ -98,7 +130,30 @@ def test_translation_change_with_repair_updates_default_when_no_history(tmp_path
     assert "Default translation: KJV" in settings.output
 
 
-def test_translation_change_repair_is_blocked_when_learning_history_exists(tmp_path: Path) -> None:
+def test_interactive_second_translation_prompt_can_keep_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = CliRunner()
+    _init_catalog(runner, tmp_path)
+    monkeypatch.setattr("psalter.cli.commands.init.sys.stdin.isatty", lambda: True)
+
+    result = runner.invoke(
+        app,
+        ["init", "--data-dir", str(tmp_path)],
+        input="2\nn\n",
+        env=_env(),
+    )
+    assert result.exit_code == 0
+    settings = runner.invoke(app, ["settings", "--data-dir", str(tmp_path)], env=_env())
+    assert settings.exit_code == 0
+    assert "Default translation: BSB" in settings.output
+    assert "KJV - 150 Psalms" in settings.output
+
+
+def test_destructive_translation_repair_is_blocked_when_learning_history_exists(
+    tmp_path: Path,
+) -> None:
     runner = CliRunner()
     _init_catalog(runner, tmp_path)
     _seed_learning_history(tmp_path)

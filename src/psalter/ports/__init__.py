@@ -3,6 +3,7 @@ from psalter.ports.clock import Clock
 from psalter.ports.installation_repository import (
     CatalogImportProgressRepository,
     InstallationSettingsRepository,
+    InstalledTranslation,
     PsalmCatalogCommitter,
 )
 from psalter.ports.learning_repository import LearningRepository
@@ -18,6 +19,7 @@ __all__ = [
     "AudioRecorder",
     "CatalogImportProgressRepository",
     "Clock",
+    "InstalledTranslation",
     "InstallationSettingsRepository",
     "LearningRepository",
     "PassageRepository",

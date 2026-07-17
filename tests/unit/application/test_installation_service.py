@@ -9,6 +9,7 @@ from psalter.application.errors import PsalmDownloadFailedError, TranslationCata
 from psalter.application.services.installation import PsalmCatalogInstaller
 from psalter.application.services.segmentation import WordCountSegmentationPolicy
 from psalter.domain.installation import InstallationSettings
+from psalter.ports.installation_repository import InstalledTranslation
 from psalter.ports.scripture_catalog_provider import ImportedPsalm, ImportedPsalmVerse
 
 
@@ -32,16 +33,22 @@ class _FakeSettingsRepo:
 
 
 class _FakeProgressRepo:
-    def mark_imported(self, installation_id: int, psalm_number: int) -> None:
+    def mark_imported(self, installation_id: int, translation_id: str, psalm_number: int) -> None:
         return None
 
-    def mark_failed(self, installation_id: int, psalm_number: int, error: str) -> None:
+    def mark_failed(
+        self,
+        installation_id: int,
+        translation_id: str,
+        psalm_number: int,
+        error: str,
+    ) -> None:
         return None
 
-    def mark_pending(self, installation_id: int, psalm_number: int) -> None:
+    def mark_pending(self, installation_id: int, translation_id: str, psalm_number: int) -> None:
         return None
 
-    def list_imported_psalm_numbers(self, installation_id: int) -> set[int]:
+    def list_imported_psalm_numbers(self, installation_id: int, translation_id: str) -> set[int]:
         return set()
 
 
@@ -63,6 +70,9 @@ class _FakeCommitter:
 
     def clear_translation_catalog(self, translation_id: str) -> None:
         return None
+
+    def list_installed_translations(self) -> tuple[InstalledTranslation, ...]:
+        return ()
 
 
 class _UnusedPsalmRepo:
@@ -114,7 +124,8 @@ def test_noninteractive_init_falls_back_to_probe_when_catalog_list_fails() -> No
 
     result = installer.initialize("kjv")
 
-    assert result.translation_id == "KJV"
+    assert result.installed_translation_id == "KJV"
+    assert result.default_translation_id == "KJV"
     assert result.imported_psalm_count == 0
 
 

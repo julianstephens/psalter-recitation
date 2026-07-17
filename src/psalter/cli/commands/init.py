@@ -31,6 +31,13 @@ def register(app: typer.Typer) -> None:
     @app.command("init")
     def init_command(
         translation: Annotated[str | None, typer.Option("--translation")] = None,
+        set_default: Annotated[
+            bool,
+            typer.Option(
+                "--set-default",
+                help="Make the installed translation the default without prompting.",
+            ),
+        ] = False,
         resume: Annotated[bool, typer.Option("--resume")] = False,
         repair: Annotated[bool, typer.Option("--repair")] = False,
         data_dir: Annotated[
@@ -47,15 +54,38 @@ def register(app: typer.Typer) -> None:
             and not any([translation, resume, repair])
         ):
             typer.echo(f"Psalter is already initialized with {settings.default_translation_id}.")
-            return
         try:
             selected_translation = translation or _prompt_translation(
                 container.installer.list_translations()
             )
+            if (
+                translation is None
+                and settings is not None
+                and settings.catalog_status.value == "ready"
+                and settings.default_translation_id is not None
+                and settings.default_translation_id.casefold() == selected_translation.casefold()
+            ):
+                typer.echo(
+                    f"Psalter is already initialized with {settings.default_translation_id}."
+                )
+                return
+            if (
+                translation is None
+                and settings is not None
+                and settings.catalog_status.value == "ready"
+                and settings.default_translation_id is not None
+                and settings.default_translation_id.casefold() != selected_translation.casefold()
+                and not repair
+            ):
+                set_default = _prompt_default_switch(
+                    current_default=settings.default_translation_id,
+                    selected_translation=selected_translation,
+                )
             typer.echo(f"Installing {selected_translation.upper()} Psalter...")
             result = _run_install_with_progress(
                 container=container,
                 translation_id=selected_translation,
+                set_default=set_default,
                 resume=resume,
                 repair=repair,
             )
@@ -66,7 +96,11 @@ def register(app: typer.Typer) -> None:
         if result.skipped_psalm_count:
             typer.echo(f"Skipped {result.skipped_psalm_count} already valid Psalms.")
         typer.echo("Generated learning sections.")
-        typer.echo(f"Default translation: {result.translation_id}.")
+        if result.installed_translation_id.casefold() != result.default_translation_id.casefold():
+            typer.echo(f"Installed translation: {result.installed_translation_id}.")
+            typer.echo(f"Default translation remains: {result.default_translation_id}.")
+        else:
+            typer.echo(f"Default translation: {result.default_translation_id}.")
         typer.echo("")
         typer.echo("Psalter is ready.")
         typer.echo("")
@@ -100,12 +134,14 @@ def _run_install_with_progress(
     *,
     container: Container,
     translation_id: str,
+    set_default: bool,
     resume: bool,
     repair: bool,
 ) -> CatalogInstallationResult:
     if not sys.stdout.isatty():
         return container.installer.initialize(
             translation_id,
+            set_as_default=set_default,
             resume=resume,
             repair=repair,
         )
@@ -134,7 +170,16 @@ def _run_install_with_progress(
 
         return container.installer.initialize(
             translation_id,
+            set_as_default=set_default,
             resume=resume,
             repair=repair,
             on_progress=on_progress,
         )
+
+
+def _prompt_default_switch(*, current_default: str, selected_translation: str) -> bool:
+    return typer.confirm(
+        f"Make {selected_translation.upper()} the default translation instead of "
+        f"{current_default.upper()}?",
+        default=False,
+    )

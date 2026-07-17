@@ -41,6 +41,7 @@ def test_sqlite_migrations_are_idempotent(tmp_path: Path) -> None:
         "002_learning_vertical_slice.sql",
         "003_psalm_first.sql",
         "004_installation_settings.sql",
+        "005_translation_scoped_progress.sql",
     ]
     assert second == []
 
@@ -488,6 +489,42 @@ def test_migration_does_not_mark_ready_when_consolidation_is_missing(tmp_path: P
     assert row is not None
     assert str(row["catalog_status"]) == "failed"
     assert row["default_translation_id"] is None
+
+
+def test_progress_migration_scopes_rows_by_translation(tmp_path: Path) -> None:
+    db, staged_migrations = _db_after_003(tmp_path)
+    _apply_004(db, staged_migrations)
+    with db.open_connection() as conn, conn:
+        conn.execute(
+            """
+            UPDATE installation_settings
+            SET default_translation_id = 'esv', default_translation_name = 'ESV'
+            WHERE id = 1
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO catalog_import_progress(
+                installation_id, psalm_number, status, imported_at, error
+            ) VALUES (1, 23, 'imported', datetime('now'), NULL)
+            """
+        )
+    shutil.copy(
+        migrations_dir() / "005_translation_scoped_progress.sql",
+        staged_migrations / "005_translation_scoped_progress.sql",
+    )
+    migrator = SqliteMigrator(db, staged_migrations)
+    assert migrator.apply_pending() == ["005_translation_scoped_progress.sql"]
+    with db.open_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT installation_id, translation_id, psalm_number, status
+            FROM catalog_import_progress
+            WHERE installation_id = 1 AND psalm_number = 23
+            """
+        ).fetchone()
+    assert row is not None
+    assert str(row["translation_id"]) == "esv"
 
 
 def _db_after_003(tmp_path: Path) -> tuple[SqliteDatabase, Path]:

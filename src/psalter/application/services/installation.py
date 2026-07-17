@@ -28,6 +28,7 @@ from psalter.ports.clock import Clock
 from psalter.ports.installation_repository import (
     CatalogImportProgressRepository,
     InstallationSettingsRepository,
+    InstalledTranslation,
     PsalmCatalogCommitter,
 )
 from psalter.ports.passage_repository import PassageRepository
@@ -43,10 +44,13 @@ _DEFAULT_CATALOG_VERSION = "catalog-v1"
 
 @dataclass(frozen=True, slots=True)
 class CatalogInstallationResult:
-    translation_id: str
-    translation_name: str
+    installed_translation_id: str
+    installed_translation_name: str
+    default_translation_id: str
+    default_translation_name: str
     imported_psalm_count: int
     skipped_psalm_count: int
+    default_changed: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,17 +111,25 @@ class PsalmCatalogInstaller:
     def get_settings(self) -> InstallationSettings | None:
         return self._settings.get_settings()
 
+    def list_installed_translations(self) -> tuple[InstalledTranslation, ...]:
+        return self._committer.list_installed_translations()
+
     def initialize(
         self,
         translation_id: str,
         *,
         resume: bool = False,
         repair: bool = False,
+        set_as_default: bool = False,
         on_progress: Callable[[CatalogInstallationProgress], None] | None = None,
     ) -> CatalogInstallationResult:
         now = self._clock.now()
         selected = self._resolve_selected_translation(translation_id)
         current = self._settings.get_settings()
+        selected_already_valid = self._validate_catalog(selected.id)
+        current_default_id = (
+            current.default_translation_id if current is not None else None
+        )
         changing_translation = (
             current is not None
             and current.default_translation_id is not None
@@ -134,19 +146,50 @@ class PsalmCatalogInstaller:
             raise InstallationAlreadyReadyError(
                 f"Psalter is already initialized with {current.default_translation_id}."
             )
-        if changing_translation and current is not None:
+
+        installing_additional_translation = (
+            current is not None
+            and current.catalog_status is CatalogStatus.READY
+            and current.default_translation_id is not None
+            and current.default_translation_id.casefold() != selected.id.casefold()
+            and not repair
+        )
+
+        switching_default_only = (
+            current is not None
+            and current.catalog_status is CatalogStatus.READY
+            and current.default_translation_id is not None
+            and current.default_translation_id.casefold() != selected.id.casefold()
+            and set_as_default
+            and selected_already_valid
+        )
+
+        if changing_translation and repair and current_default_id is not None:
             if self._committer.has_any_learning_history():
                 raise TranslationChangeBlockedError(
                     "Cannot replace the installed translation because learning history exists.\n"
                     "Translation migration and multi-translation support are not implemented."
                 )
-            if not repair:
-                raise TranslationChangeBlockedError(
-                    "Translation replacement requires explicit repair mode.\n"
-                    f"Run `psalter init --translation {selected.id} --repair`."
-                )
-            if current.default_translation_id is not None:
-                self._committer.clear_translation_catalog(current.default_translation_id)
+            self._committer.clear_translation_catalog(current_default_id)
+            current = self._settings.get_settings()
+            selected_already_valid = self._validate_catalog(selected.id)
+
+        if switching_default_only and current is not None:
+            updated = current.change_default_translation(
+                translation_id=selected.id,
+                translation_name=selected.name,
+                when=now,
+            )
+            self._settings.upsert(updated)
+            return CatalogInstallationResult(
+                installed_translation_id=selected.id,
+                installed_translation_name=selected.name,
+                default_translation_id=updated.default_translation_id or selected.id,
+                default_translation_name=updated.default_translation_name or selected.name,
+                imported_psalm_count=0,
+                skipped_psalm_count=len(self._required_psalm_numbers),
+                default_changed=True,
+            )
 
         base = current or InstallationSettings(
             id=_DEFAULT_INSTALLATION_ID,
@@ -159,7 +202,9 @@ class PsalmCatalogInstaller:
             updated_at=now,
             last_error=None,
         )
-        if base.catalog_status is CatalogStatus.READY and (repair or changing_translation):
+        if installing_additional_translation:
+            installing = base.clear_last_error(when=now)
+        elif base.catalog_status is CatalogStatus.READY and repair:
             installing = base.restart_installation(
                 scripture_provider=self._provider_name,
                 translation_id=selected.id,
@@ -177,7 +222,7 @@ class PsalmCatalogInstaller:
 
         imported = 0
         skipped = 0
-        imported_numbers = self._progress.list_imported_psalm_numbers(installing.id)
+        imported_numbers = self._progress.list_imported_psalm_numbers(installing.id, selected.id)
         for psalm_number in self._required_psalm_numbers:
             should_skip = (
                 psalm_number in imported_numbers
@@ -195,7 +240,7 @@ class PsalmCatalogInstaller:
                 )
                 continue
             if self._is_psalm_bundle_valid(selected.id, psalm_number):
-                self._progress.mark_imported(installing.id, psalm_number)
+                self._progress.mark_imported(installing.id, selected.id, psalm_number)
                 imported_numbers.add(psalm_number)
                 skipped += 1
                 self._emit_progress(
@@ -217,11 +262,11 @@ class PsalmCatalogInstaller:
                     f"Repair refused for Psalm {psalm_number} ({selected.id}) because learning "
                     "history exists."
                 )
-                self._progress.mark_failed(installing.id, psalm_number, reason)
-                failed = installing.mark_failed(reason=reason, when=self._clock.now())
+                self._progress.mark_failed(installing.id, selected.id, psalm_number, reason)
+                failed = self._record_failure(installing, reason)
                 self._settings.upsert(failed)
                 raise CatalogRepairUnsafeError(reason)
-            self._progress.mark_pending(installing.id, psalm_number)
+            self._progress.mark_pending(installing.id, selected.id, psalm_number)
             try:
                 imported_psalm = self._provider.fetch_psalm(selected.id, psalm_number)
                 if imported_psalm.psalm_number != psalm_number:
@@ -254,8 +299,8 @@ class PsalmCatalogInstaller:
                 )
             except (ApplicationError, ValueError, TypeError, sqlite3.Error) as exc:
                 reason = str(exc).strip() or "unknown installation failure"
-                self._progress.mark_failed(installing.id, psalm_number, reason)
-                failed = installing.mark_failed(reason=reason, when=self._clock.now())
+                self._progress.mark_failed(installing.id, selected.id, psalm_number, reason)
+                failed = self._record_failure(installing, reason)
                 self._settings.upsert(failed)
                 raise CatalogInstallationFailedError(reason) from exc
 
@@ -264,20 +309,47 @@ class PsalmCatalogInstaller:
                 f"Catalog validation failed for {selected.id}. "
                 f"Run `psalter init --repair --translation {selected.id}`."
             )
-            failed = installing.mark_failed(reason=reason, when=self._clock.now())
+            failed = self._record_failure(installing, reason)
             self._settings.upsert(failed)
             raise CatalogValidationFailedError(reason)
 
-        ready = installing.mark_ready(
-            catalog_version=_DEFAULT_CATALOG_VERSION, when=self._clock.now()
-        )
+        default_changed = False
+        if installing_additional_translation:
+            ready = installing.clear_last_error(when=self._clock.now())
+            if changing_translation and set_as_default:
+                ready = ready.change_default_translation(
+                    translation_id=selected.id,
+                    translation_name=selected.name,
+                    when=self._clock.now(),
+                )
+                default_changed = True
+        else:
+            ready = installing.mark_ready(
+                catalog_version=_DEFAULT_CATALOG_VERSION, when=self._clock.now()
+            )
+            if changing_translation and set_as_default:
+                ready = ready.change_default_translation(
+                    translation_id=selected.id,
+                    translation_name=selected.name,
+                    when=self._clock.now(),
+                )
+                default_changed = True
         self._settings.upsert(ready)
         return CatalogInstallationResult(
-            translation_id=selected.id,
-            translation_name=selected.name,
+            installed_translation_id=selected.id,
+            installed_translation_name=selected.name,
+            default_translation_id=ready.default_translation_id or selected.id,
+            default_translation_name=ready.default_translation_name or selected.name,
             imported_psalm_count=imported,
             skipped_psalm_count=skipped,
+            default_changed=default_changed,
         )
+
+    def _record_failure(self, settings: InstallationSettings, reason: str) -> InstallationSettings:
+        when = self._clock.now()
+        if settings.catalog_status is CatalogStatus.READY:
+            return settings.record_last_error(reason=reason, when=when)
+        return settings.mark_failed(reason=reason, when=when)
 
     def _emit_progress(
         self,
