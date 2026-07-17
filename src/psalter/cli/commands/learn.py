@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import select
+import sys
+import time
 from pathlib import Path
 from typing import Annotated
 
@@ -122,13 +125,11 @@ def register(app: typer.Typer) -> None:
                         typer.echo("Recording...")
                         typer.echo("Press Enter to stop.")
 
-                        def _wait_for_stop() -> None:
-                            _await_enter()
-                            typer.echo("Transcribing locally...")
-
                         assessment = (
                             container.spoken_recitation_service.record_transcribe_and_submit(
-                                passage_id, wait_for_stop=_wait_for_stop
+                                passage_id,
+                                wait_for_stop=_wait_for_enter_with_timeout,
+                                before_transcribe=_print_transcribing,
                             )
                         )
                 except (
@@ -184,6 +185,41 @@ def _read_multiline_submission() -> str:
 
 def _await_enter() -> None:
     input()
+
+
+def _wait_for_enter_with_timeout(timeout: float | None) -> bool:
+    if timeout is None:
+        _await_enter()
+        return True
+    if sys.platform.startswith("win"):
+        return _wait_for_enter_windows(timeout)
+    return _wait_for_enter_posix(timeout)
+
+
+def _wait_for_enter_windows(timeout: float) -> bool:
+    import msvcrt
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if msvcrt.kbhit():
+            character = msvcrt.getwch()
+            if character == "\003":
+                raise KeyboardInterrupt
+            if character in {"\r", "\n"}:
+                return True
+        time.sleep(0.01)
+    return False
+
+
+def _wait_for_enter_posix(timeout: float) -> bool:
+    ready, _, _ = select.select([sys.stdin], [], [], timeout)
+    if not ready:
+        return False
+    return sys.stdin.readline() != ""
+
+
+def _print_transcribing() -> None:
+    typer.echo("Transcribing locally...")
 
 
 def _print_assessment(assessment: RecitationAssessmentDTO) -> None:

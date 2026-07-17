@@ -91,6 +91,32 @@ def test_whisper_transcriber_raises_on_non_zero_exit(
         transcriber.transcribe(audio)
 
 
+def test_whisper_transcriber_cleans_up_sidecars_after_non_zero_exit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    model = tmp_path / "model.bin"
+    model.write_bytes(b"m")
+    audio = _audio(tmp_path / "input.wav")
+    created_paths: dict[str, Path] = {}
+
+    def _fake_run(args: list[str], **kwargs: object) -> ProcessResult:
+        output_base = Path(args[args.index("--output-file") + 1])
+        created_paths["txt"] = output_base.with_suffix(".txt")
+        created_paths["json"] = output_base.with_suffix(".json")
+        created_paths["txt"].write_text("partial", encoding="utf-8")
+        created_paths["json"].write_text("{}", encoding="utf-8")
+        return ProcessResult(args=tuple(args), returncode=1, stdout="", stderr="boom")
+
+    monkeypatch.setattr("psalter.adapters.transcription.whisper_cpp.run_process", _fake_run)
+    monkeypatch.setattr("os.access", lambda *_args, **_kwargs: True)
+
+    transcriber = WhisperCppTranscriber(_config(tmp_path, model))
+    with pytest.raises(WhisperProcessFailedError):
+        transcriber.transcribe(audio)
+    assert not created_paths["txt"].exists()
+    assert not created_paths["json"].exists()
+
+
 def test_whisper_transcriber_raises_when_output_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -106,6 +132,29 @@ def test_whisper_transcriber_raises_when_output_missing(
     transcriber = WhisperCppTranscriber(_config(tmp_path, model))
     with pytest.raises(TranscriptOutputMissingError):
         transcriber.transcribe(audio)
+
+
+def test_whisper_transcriber_cleans_up_sidecars_when_output_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    model = tmp_path / "model.bin"
+    model.write_bytes(b"m")
+    audio = _audio(tmp_path / "input.wav")
+    created_path: dict[str, Path] = {}
+
+    def _fake_run(args: list[str], **kwargs: object) -> ProcessResult:
+        output_base = Path(args[args.index("--output-file") + 1])
+        created_path["json"] = output_base.with_suffix(".json")
+        created_path["json"].write_text("{}", encoding="utf-8")
+        return ProcessResult(args=tuple(args), returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("psalter.adapters.transcription.whisper_cpp.run_process", _fake_run)
+    monkeypatch.setattr("os.access", lambda *_args, **_kwargs: True)
+
+    transcriber = WhisperCppTranscriber(_config(tmp_path, model))
+    with pytest.raises(TranscriptOutputMissingError):
+        transcriber.transcribe(audio)
+    assert not created_path["json"].exists()
 
 
 def test_whisper_transcriber_raises_on_blank_output(
@@ -126,3 +175,56 @@ def test_whisper_transcriber_raises_on_blank_output(
     transcriber = WhisperCppTranscriber(_config(tmp_path, model))
     with pytest.raises(TranscriptEmptyError):
         transcriber.transcribe(audio)
+
+
+def test_whisper_transcriber_cleans_up_blank_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    model = tmp_path / "model.bin"
+    model.write_bytes(b"m")
+    audio = _audio(tmp_path / "input.wav")
+    created_path: dict[str, Path] = {}
+
+    def _fake_run(args: list[str], **kwargs: object) -> ProcessResult:
+        output_base = Path(args[args.index("--output-file") + 1])
+        created_path["txt"] = output_base.with_suffix(".txt")
+        created_path["txt"].write_text("   ", encoding="utf-8")
+        return ProcessResult(args=tuple(args), returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("psalter.adapters.transcription.whisper_cpp.run_process", _fake_run)
+    monkeypatch.setattr("os.access", lambda *_args, **_kwargs: True)
+
+    transcriber = WhisperCppTranscriber(_config(tmp_path, model))
+    with pytest.raises(TranscriptEmptyError):
+        transcriber.transcribe(audio)
+    assert not created_path["txt"].exists()
+
+
+def test_whisper_transcriber_cleans_up_after_transcript_read_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    model = tmp_path / "model.bin"
+    model.write_bytes(b"m")
+    audio = _audio(tmp_path / "input.wav")
+    created_path: dict[str, Path] = {}
+    original_read_text = Path.read_text
+
+    def _fake_run(args: list[str], **kwargs: object) -> ProcessResult:
+        output_base = Path(args[args.index("--output-file") + 1])
+        created_path["txt"] = output_base.with_suffix(".txt")
+        created_path["txt"].write_text("transcript text", encoding="utf-8")
+        return ProcessResult(args=tuple(args), returncode=0, stdout="", stderr="")
+
+    def _failing_read_text(self: Path, *args: object, **kwargs: object) -> str:
+        if self == created_path["txt"]:
+            raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "bad byte")
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr("psalter.adapters.transcription.whisper_cpp.run_process", _fake_run)
+    monkeypatch.setattr("os.access", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(Path, "read_text", _failing_read_text)
+
+    transcriber = WhisperCppTranscriber(_config(tmp_path, model))
+    with pytest.raises(UnicodeDecodeError):
+        transcriber.transcribe(audio)
+    assert not created_path["txt"].exists()

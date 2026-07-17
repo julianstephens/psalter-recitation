@@ -14,7 +14,7 @@ class AudioRecordingRequest:
     passage_id: str
     sample_rate_hz: int
     channels: int
-    wait_for_stop: Callable[[], None] | None = None
+    wait_for_stop: Callable[[float | None], bool] | None = None
 
 
 @dataclass(frozen=True, slots=True)

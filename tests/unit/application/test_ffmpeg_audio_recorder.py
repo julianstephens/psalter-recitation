@@ -16,6 +16,7 @@ class _FakeProcess:
         self.returncode = returncode
         self.stdin = io.StringIO()
         self._terminated = False
+        self.poll_count = 0
 
     def wait(self, timeout: int | None = None) -> int:
         return self.returncode
@@ -24,6 +25,7 @@ class _FakeProcess:
         return ("", "stderr output")
 
     def poll(self) -> int | None:
+        self.poll_count += 1
         return None if not self._terminated else self.returncode
 
     def terminate(self) -> None:
@@ -64,7 +66,7 @@ def test_ffmpeg_recorder_records_to_wav_with_expected_args(
             passage_id="p1",
             sample_rate_hz=16000,
             channels=1,
-            wait_for_stop=lambda: None,
+            wait_for_stop=lambda timeout=None: True,
         )
     )
 
@@ -97,7 +99,7 @@ def test_ffmpeg_recorder_raises_on_non_zero_exit(
                 passage_id="p1",
                 sample_rate_hz=16000,
                 channels=1,
-                wait_for_stop=lambda: None,
+                wait_for_stop=lambda timeout=None: True,
             )
         )
 
@@ -115,7 +117,7 @@ def test_ffmpeg_recorder_raises_when_output_missing(
                 passage_id="p1",
                 sample_rate_hz=16000,
                 channels=1,
-                wait_for_stop=lambda: None,
+                wait_for_stop=lambda timeout=None: True,
             )
         )
 
@@ -137,7 +139,7 @@ def test_ffmpeg_recorder_raises_when_zero_byte_output(
                 passage_id="p1",
                 sample_rate_hz=16000,
                 channels=1,
-                wait_for_stop=lambda: None,
+                wait_for_stop=lambda timeout=None: True,
             )
         )
 
@@ -159,7 +161,70 @@ def test_ffmpeg_recorder_handles_interrupt(tmp_path: Path, monkeypatch: pytest.M
                 passage_id="p1",
                 sample_rate_hz=16000,
                 channels=1,
-                wait_for_stop=lambda: (_ for _ in ()).throw(KeyboardInterrupt()),
+                wait_for_stop=lambda timeout=None: (_ for _ in ()).throw(KeyboardInterrupt()),
             )
         )
     assert fake_process._terminated
+
+
+def test_ffmpeg_recorder_terminates_child_when_wait_callback_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_process = _FakeProcess(returncode=0)
+
+    def _fake_popen(args: list[str], **kwargs: object) -> _FakeProcess:
+        Path(args[-1]).write_bytes(b"wav-data")
+        return fake_process
+
+    monkeypatch.setattr("sys.platform", "win32")
+    monkeypatch.setattr("subprocess.Popen", _fake_popen)
+
+    recorder = FfmpegAudioRecorder(_config(tmp_path))
+    with pytest.raises(RuntimeError, match="wait callback failed"):
+        recorder.record(
+            AudioRecordingRequest(
+                passage_id="p1",
+                sample_rate_hz=16000,
+                channels=1,
+                wait_for_stop=lambda timeout=None: (_ for _ in ()).throw(
+                    RuntimeError("wait callback failed")
+                ),
+            )
+        )
+    assert fake_process._terminated
+
+
+def test_ffmpeg_recorder_does_not_write_stop_when_process_exits_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _ExitingProcess(_FakeProcess):
+        def poll(self) -> int | None:
+            self.poll_count += 1
+            if self.poll_count >= 2:
+                return self.returncode
+            return None
+
+    fake_process = _ExitingProcess(returncode=0)
+    observed_timeouts: list[float | None] = []
+
+    def _fake_popen(args: list[str], **kwargs: object) -> _ExitingProcess:
+        Path(args[-1]).write_bytes(b"wav-data")
+        return fake_process
+
+    monkeypatch.setattr("sys.platform", "win32")
+    monkeypatch.setattr("subprocess.Popen", _fake_popen)
+    monkeypatch.setattr("psalter.adapters.audio.ffmpeg._read_wav_duration", lambda _: 1.0)
+
+    recorder = FfmpegAudioRecorder(_config(tmp_path))
+    artifact = recorder.record(
+        AudioRecordingRequest(
+            passage_id="p1",
+            sample_rate_hz=16000,
+            channels=1,
+            wait_for_stop=lambda timeout=None: observed_timeouts.append(timeout) or False,
+        )
+    )
+
+    assert artifact.duration_seconds == 1.0
+    assert fake_process.stdin.getvalue() == ""
+    assert observed_timeouts and observed_timeouts[0] == 0.1

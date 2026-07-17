@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import wave
+from collections.abc import Callable
 from pathlib import Path
 
 from psalter.application.dto import AudioArtifact, AudioRecordingRequest
@@ -37,12 +38,17 @@ class FfmpegAudioRecorder:
                 text=True,
                 shell=False,
             )
+            stop_requested = False
             if request.wait_for_stop is not None:
-                request.wait_for_stop()
+                stop_requested = self._wait_for_stop_or_process_exit(
+                    process=process,
+                    wait_for_stop=request.wait_for_stop,
+                )
             else:
                 process.wait(timeout=self._config.max_duration_seconds)
-            self._request_stop(process)
-            stdout, stderr = process.communicate(timeout=10)
+            if stop_requested:
+                self._request_stop(process)
+            _, stderr = process.communicate(timeout=10)
             if process.returncode not in (0, 255):
                 raise AudioRecordingFailedError(
                     f"Recorder failed with exit code {process.returncode}. "
@@ -74,15 +80,14 @@ class FfmpegAudioRecorder:
                 self._terminate_process(process)
             raise AudioRecordingFailedError("Recording interrupted.") from exc
         except subprocess.TimeoutExpired as exc:
-            if process is not None:
-                self._terminate_process(process)
             raise AudioRecordingFailedError("Recorder process did not stop cleanly.") from exc
         except OSError as exc:
-            if process is not None:
-                self._terminate_process(process)
             raise AudioRecordingFailedError(
                 f"Unable to execute recorder at {self._config.executable_path}: {exc}"
             ) from exc
+        finally:
+            if process is not None and process.poll() is None:
+                self._terminate_process(process)
 
     def _build_output_path(self, passage_id: str) -> Path:
         prefix = f"psalter-{passage_id.replace('/', '-')}-"
@@ -133,9 +138,13 @@ class FfmpegAudioRecorder:
         )
 
     def _request_stop(self, process: subprocess.Popen[str]) -> None:
-        if process.stdin is not None:
+        if process.poll() is not None or process.stdin is None:
+            return
+        try:
             process.stdin.write("q\n")
             process.stdin.flush()
+        except (BrokenPipeError, OSError, ValueError):
+            return
 
     def _terminate_process(self, process: subprocess.Popen[str]) -> None:
         if process.poll() is None:
@@ -144,6 +153,18 @@ class FfmpegAudioRecorder:
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 process.kill()
+
+    def _wait_for_stop_or_process_exit(
+        self,
+        *,
+        process: subprocess.Popen[str],
+        wait_for_stop: Callable[[float | None], bool],
+    ) -> bool:
+        poll_interval = 0.1
+        while process.poll() is None:
+            if wait_for_stop(poll_interval):
+                return True
+        return False
 
 
 def _read_wav_duration(path: Path) -> float | None:

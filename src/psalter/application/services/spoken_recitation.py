@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
@@ -37,7 +38,8 @@ class SpokenRecitationService:
         self,
         passage_id: str,
         *,
-        wait_for_stop: Callable[[], None] | None = None,
+        wait_for_stop: Callable[[float | None], bool] | None = None,
+        before_transcribe: Callable[[], None] | None = None,
     ) -> RecitationAssessmentDTO:
         audio_artifact_path: Path | None = None
         transcript_artifact_path: Path | None = None
@@ -51,6 +53,8 @@ class SpokenRecitationService:
                 )
             )
             audio_artifact_path = audio.path
+            if before_transcribe is not None:
+                before_transcribe()
             transcript = self.transcriber.transcribe(audio)
             transcript_artifact_path = transcript.raw_output_path
             if not transcript.text.strip():
@@ -78,5 +82,9 @@ class SpokenRecitationService:
                     )
 
 
-def _wait_for_enter() -> None:
-    input()
+def _wait_for_enter(timeout: float | None = None) -> bool:
+    if timeout is None:
+        input()
+        return True
+    time.sleep(timeout)
+    return False
