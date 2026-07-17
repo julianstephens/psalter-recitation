@@ -5,6 +5,7 @@ from psalter.adapters.persistence.sqlite import (
     SqliteLearningSessionRepository,
     SqliteMigrator,
     SqlitePassageRepository,
+    SqliteRecitationCommitter,
     SqliteRecitationRepository,
     SqliteReviewRepository,
 )
@@ -14,6 +15,7 @@ __all__ = [
     "SqliteLearningSessionRepository",
     "SqliteMigrator",
     "SqlitePassageRepository",
+    "SqliteRecitationCommitter",
     "SqliteRecitationRepository",
     "SqliteReviewRepository",
     "migrations_dir",
