@@ -7,10 +7,21 @@ import typer
 
 from psalter.application.dto import RecitationAssessmentDTO, RecitationSubmission
 from psalter.application.errors import (
+    ArtifactCleanupFailedError,
+    AudioArtifactInvalidError,
+    AudioRecorderNotConfiguredError,
+    AudioRecordingFailedError,
     InvalidLearningTransitionError,
     LearningSessionNotFoundError,
     PassageNotFoundError,
     PersistenceConflictError,
+    TranscriberNotConfiguredError,
+    TranscriptEmptyError,
+    TranscriptOutputMissingError,
+    UnsupportedAudioPlatformError,
+    WhisperExecutableNotFoundError,
+    WhisperModelNotFoundError,
+    WhisperProcessFailedError,
 )
 from psalter.bootstrap import Container, build_container
 from psalter.config import build_config
@@ -81,17 +92,59 @@ def register(app: typer.Typer) -> None:
 
             if session.phase is LearningPhase.READY_FOR_RECITATION:
                 typer.echo("")
-                typer.echo("Type your recitation. End with a line containing only .done")
-                text = _read_multiline_submission()
-                try:
-                    assessment = container.recitation_service.submit_text(
-                        RecitationSubmission(
-                            passage_id=passage_id,
-                            source=RecitationSource.TYPED,
-                            text=text,
-                        )
+                method = (
+                    typer.prompt("Recitation method [typed/spoken]", default="typed")
+                    .strip()
+                    .casefold()
+                )
+                if method not in {"typed", "spoken"}:
+                    typer.secho(
+                        "Invalid recitation method. Choose either typed or spoken.",
+                        fg=typer.colors.RED,
+                        err=True,
                     )
-                except PersistenceConflictError as exc:
+                    raise typer.Exit(code=1)
+                try:
+                    if method == "typed":
+                        typer.echo("Type your recitation. End with a line containing only .done")
+                        text = _read_multiline_submission()
+                        assessment = container.recitation_service.submit_text(
+                            RecitationSubmission(
+                                passage_id=passage_id,
+                                source=RecitationSource.TYPED,
+                                text=text,
+                            )
+                        )
+                    else:
+                        typer.echo("Spoken recitation selected.")
+                        typer.echo("Press Enter to begin recording.")
+                        _await_enter()
+                        typer.echo("Recording...")
+                        typer.echo("Press Enter to stop.")
+
+                        def _wait_for_stop() -> None:
+                            _await_enter()
+                            typer.echo("Transcribing locally...")
+
+                        assessment = (
+                            container.spoken_recitation_service.record_transcribe_and_submit(
+                                passage_id, wait_for_stop=_wait_for_stop
+                            )
+                        )
+                except (
+                    PersistenceConflictError,
+                    AudioRecorderNotConfiguredError,
+                    AudioRecordingFailedError,
+                    AudioArtifactInvalidError,
+                    TranscriberNotConfiguredError,
+                    WhisperExecutableNotFoundError,
+                    WhisperModelNotFoundError,
+                    WhisperProcessFailedError,
+                    TranscriptOutputMissingError,
+                    TranscriptEmptyError,
+                    ArtifactCleanupFailedError,
+                    UnsupportedAudioPlatformError,
+                ) as exc:
                     typer.secho(str(exc), fg=typer.colors.RED, err=True)
                     raise typer.Exit(code=1) from exc
                 _print_assessment(assessment)
@@ -127,6 +180,10 @@ def _read_multiline_submission() -> str:
             break
         lines.append(line)
     return "\n".join(lines).strip()
+
+
+def _await_enter() -> None:
+    input()
 
 
 def _print_assessment(assessment: RecitationAssessmentDTO) -> None:

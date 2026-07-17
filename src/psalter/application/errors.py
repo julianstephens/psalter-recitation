@@ -32,3 +32,47 @@ class InvalidPassageError(ApplicationError):
 
 class PersistenceConflictError(ApplicationError):
     """Raised when a write conflicts with current persistent state."""
+
+
+class AudioRecorderNotConfiguredError(ApplicationError):
+    """Raised when spoken recitation is requested without recorder configuration."""
+
+
+class AudioRecordingFailedError(ApplicationError):
+    """Raised when audio recording subprocess execution fails."""
+
+
+class AudioArtifactInvalidError(ApplicationError):
+    """Raised when a recorded artifact is missing or malformed."""
+
+
+class TranscriberNotConfiguredError(ApplicationError):
+    """Raised when spoken recitation is requested without transcriber configuration."""
+
+
+class WhisperExecutableNotFoundError(ApplicationError):
+    """Raised when the configured whisper executable cannot be used."""
+
+
+class WhisperModelNotFoundError(ApplicationError):
+    """Raised when the configured whisper model path does not exist."""
+
+
+class WhisperProcessFailedError(ApplicationError):
+    """Raised when whisper subprocess exits unsuccessfully or times out."""
+
+
+class TranscriptOutputMissingError(ApplicationError):
+    """Raised when whisper succeeds but no transcript output is produced."""
+
+
+class TranscriptEmptyError(ApplicationError):
+    """Raised when generated transcript output is blank."""
+
+
+class ArtifactCleanupFailedError(ApplicationError):
+    """Raised when temporary artifact cleanup fails."""
+
+
+class UnsupportedAudioPlatformError(ApplicationError):
+    """Raised when recorder platform command generation is unsupported."""

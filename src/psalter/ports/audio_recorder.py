@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from psalter.application.dto import AudioArtifact
+from psalter.application.dto import AudioArtifact, AudioRecordingRequest
 
 
 class AudioRecorder(Protocol):
-    def record(self, passage_id: str) -> AudioArtifact: ...
+    def record(self, request: AudioRecordingRequest) -> AudioArtifact: ...

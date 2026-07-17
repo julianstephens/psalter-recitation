@@ -1,21 +1,36 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 
 from psalter.domain.learning import LearningPhase
 from psalter.domain.recitation import AlignmentKind, RecitationResult, RecitationSource
 
 
 @dataclass(frozen=True, slots=True)
-class AudioArtifact:
-    uri: str
+class AudioRecordingRequest:
+    passage_id: str
+    sample_rate_hz: int
+    channels: int
+    wait_for_stop: Callable[[], None] | None = None
 
 
 @dataclass(frozen=True, slots=True)
-class TranscriptDTO:
-    transcript: str
-    normalized_transcript: str
+class AudioArtifact:
+    path: Path
+    sample_rate_hz: int
+    channels: int
+    duration_seconds: float | None
+
+
+@dataclass(frozen=True, slots=True)
+class TranscriptArtifact:
+    text: str
+    provider: str
+    model: str
+    raw_output_path: Path | None
 
 
 @dataclass(frozen=True, slots=True)
