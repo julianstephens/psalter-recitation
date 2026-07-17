@@ -9,13 +9,20 @@ _ROOT_LOGGER_NAME = "psalter"
 _DEFAULT_FORMAT = "%(asctime)s %(levelname)s %(name)s %(message)s"
 
 
-def configure_logging(level: str | int = logging.WARNING) -> None:
-    """Configure Psaltter logging once, writing diagnostics to stderr."""
+def configure_logging(
+    level: str | int = logging.WARNING,
+    *,
+    force: bool = False,
+) -> None:
+    """Configure Psalter diagnostics on stderr without duplicating handlers."""
     resolved_level = _resolve_level(level)
     logger = logging.getLogger(_ROOT_LOGGER_NAME)
-    logger.setLevel(resolved_level)
     logger.propagate = False
 
+    if logger.handlers and not force:
+        return
+
+    logger.setLevel(resolved_level)
     if not logger.handlers:
         handler = logging.StreamHandler(sys.stderr)
         handler.setFormatter(logging.Formatter(_DEFAULT_FORMAT))
