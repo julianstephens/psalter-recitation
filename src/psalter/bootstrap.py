@@ -46,6 +46,9 @@ from psalter.application.services.spoken_recitation import (
     SpokenRecitationService,
 )
 from psalter.config import AppConfig, build_config
+from psalter.logging import configure_logging, debug_event, get_logger
+
+logger = get_logger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +70,16 @@ class Container:
 
 def build_container(config: AppConfig | None = None) -> Container:
     resolved = config or build_config()
+    configure_logging(resolved.log_level)
+    debug_event(
+        logger,
+        "container_build_started",
+        data_dir=str(resolved.data_dir),
+        db_path=str(resolved.db_path),
+        scripture_provider=resolved.scripture_provider,
+        recorder_configured=resolved.recorder is not None,
+        transcriber_configured=resolved.whisper_cpp is not None,
+    )
     db = SqliteDatabase(path=resolved.db_path)
     migrator = SqliteMigrator(database=db, migrations_dir=migrations_dir())
     clock = SystemClock()
@@ -160,7 +173,7 @@ def build_container(config: AppConfig | None = None) -> Container:
         clock=clock,
     )
 
-    return Container(
+    container = Container(
         config=resolved,
         db=db,
         migrator=migrator,
@@ -175,17 +188,26 @@ def build_container(config: AppConfig | None = None) -> Container:
         installer=installer,
         installation_readiness=readiness,
     )
+    debug_event(
+        logger,
+        "container_build_completed",
+        default_translation_id=resolved_default_translation_id,
+        retention_policy=retention_policy.value,
+    )
+    return container
 
 
 def initialize_storage(config: AppConfig | None = None) -> AppConfig:
     container = build_container(config)
-    container.migrator.apply_pending()
+    applied = container.migrator.apply_pending()
+    debug_event(logger, "storage_initialized", applied_migrations=tuple(applied))
     return container.config
 
 
 def build_scripture_provider(
     config: AppConfig,
 ) -> HelloAoScriptureCatalogProvider | MockScriptureCatalogProvider:
+    debug_event(logger, "scripture_provider_selected", provider=config.scripture_provider)
     if config.scripture_provider == "mock":
         return MockScriptureCatalogProvider()
     return HelloAoScriptureCatalogProvider(
