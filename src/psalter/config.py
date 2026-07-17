@@ -32,6 +32,7 @@ class AppConfig:
     scripture_provider: str
     scripture_provider_base_url: str
     scripture_provider_timeout_seconds: float
+    log_level: str
     whisper_cpp: WhisperCppConfig | None
     recorder: FfmpegRecorderConfig | None
 
@@ -106,6 +107,7 @@ def build_config(data_dir: Path | None = None) -> AppConfig:
         scripture_provider_timeout_seconds=float(
             os.getenv("PSALTER_SCRIPTURE_PROVIDER_TIMEOUT_SECONDS", "20")
         ),
+        log_level=os.getenv("PSALTER_LOG_LEVEL", "WARNING").strip().upper(),
         whisper_cpp=whisper_cpp,
         recorder=recorder,
     )
