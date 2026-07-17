@@ -177,7 +177,7 @@ def serialize_settings(
 
 
 def serialize_learning_screen(screen: PsalmLearningScreenDTO) -> dict[str, object]:
-    payload: dict[str, object] = {
+    return {
         "screen": screen.screen.value,
         "psalm_number": screen.view.psalm.psalm_number,
         "translation_id": screen.view.psalm.translation_id,
@@ -207,9 +207,12 @@ def serialize_learning_screen(screen: PsalmLearningScreenDTO) -> dict[str, objec
         ),
         "practice": (
             {
+                "kind": screen.practice.kind.value,
+                "canonical_text": screen.practice.canonical_text,
                 "masked_text": screen.practice.masked_text,
                 "level": screen.practice.level,
                 "max_level": screen.practice.max_level,
+                "mismatch_excerpt": screen.practice.mismatch_excerpt,
             }
             if screen.practice is not None
             else None
@@ -228,7 +231,6 @@ def serialize_learning_screen(screen: PsalmLearningScreenDTO) -> dict[str, objec
             else None
         ),
     }
-    return payload
 
 
 def _serialize_datetime(value: datetime | None) -> str | None:
