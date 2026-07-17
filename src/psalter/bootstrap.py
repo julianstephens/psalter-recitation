@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from psalter.adapters.audio import FfmpegAudioRecorder, UnsupportedAudioRecorder
 from psalter.adapters.persistence import (
     SqliteDatabase,
     SqliteLearningSessionRepository,
@@ -13,6 +14,7 @@ from psalter.adapters.persistence import (
     migrations_dir,
 )
 from psalter.adapters.system_clock import SystemClock
+from psalter.adapters.transcription import UnsupportedTranscriber, WhisperCppTranscriber
 from psalter.application.services.learning import LearningService
 from psalter.application.services.passage import PassageService
 from psalter.application.services.progress import ProgressService
@@ -23,6 +25,10 @@ from psalter.application.services.recitation import (
 )
 from psalter.application.services.review import ReviewService
 from psalter.application.services.scheduling import InitialReviewSchedulingPolicy
+from psalter.application.services.spoken_recitation import (
+    ArtifactRetentionPolicy,
+    SpokenRecitationService,
+)
 from psalter.config import AppConfig, build_config
 
 
@@ -34,6 +40,7 @@ class Container:
     passage_service: PassageService
     learning_service: LearningService
     recitation_service: RecitationService
+    spoken_recitation_service: SpokenRecitationService
     review_service: ReviewService
     progress_service: ProgressService
 
@@ -62,6 +69,28 @@ def build_container(config: AppConfig | None = None) -> Container:
         policy=RecitationPolicy(required_passes_to_learn=2),
         clock=clock,
     )
+    recorder = (
+        FfmpegAudioRecorder(resolved.recorder)
+        if resolved.recorder is not None
+        else UnsupportedAudioRecorder()
+    )
+    transcriber = (
+        WhisperCppTranscriber(resolved.whisper_cpp)
+        if resolved.whisper_cpp is not None
+        else UnsupportedTranscriber()
+    )
+    retention_policy = (
+        ArtifactRetentionPolicy.RETAIN
+        if (resolved.whisper_cpp and resolved.whisper_cpp.retain_artifacts)
+        or (resolved.recorder and resolved.recorder.retain_artifacts)
+        else ArtifactRetentionPolicy.DELETE
+    )
+    spoken_recitation_service = SpokenRecitationService(
+        recorder=recorder,
+        transcriber=transcriber,
+        recitation_service=recitation_service,
+        retention_policy=retention_policy,
+    )
     review_service = ReviewService(reviews=review_repo, clock=clock)
     progress_service = ProgressService(
         passages=passage_repo,
@@ -78,6 +107,7 @@ def build_container(config: AppConfig | None = None) -> Container:
         passage_service=passage_service,
         learning_service=learning_service,
         recitation_service=recitation_service,
+        spoken_recitation_service=spoken_recitation_service,
         review_service=review_service,
         progress_service=progress_service,
     )

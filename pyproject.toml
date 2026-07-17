@@ -29,6 +29,9 @@ module-name = "psalter"
 addopts = "-q --cov=psalter --cov-report=term-missing"
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = [
+	"integration: opt-in integration tests requiring local external tooling",
+]
 
 [tool.ruff]
 line-length = 100
@@ -42,4 +45,3 @@ python_version = "3.14"
 strict = true
 mypy_path = ["src"]
 packages = ["psalter"]
-

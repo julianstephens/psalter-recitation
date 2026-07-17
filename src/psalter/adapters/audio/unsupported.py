@@ -1,10 +1,9 @@
-from psalter.application.dto import AudioArtifact
-from psalter.application.errors import NotSupportedError
+from psalter.application.dto import AudioArtifact, AudioRecordingRequest
+from psalter.application.errors import AudioRecorderNotConfiguredError
 
 
 class UnsupportedAudioRecorder:
-    def record(self, passage_id: str) -> AudioArtifact:
-        raise NotSupportedError(
-            "No audio recorder has been configured. "
-            "Recording is intentionally unsupported in this scaffold."
+    def record(self, request: AudioRecordingRequest) -> AudioArtifact:
+        raise AudioRecorderNotConfiguredError(
+            "Spoken recitation is not configured: PSALTER_RECORDER_EXECUTABLE is required."
         )
