@@ -127,9 +127,7 @@ class PsalmCatalogInstaller:
         selected = self._resolve_selected_translation(translation_id)
         current = self._settings.get_settings()
         selected_already_valid = self._validate_catalog(selected.id)
-        current_default_id = (
-            current.default_translation_id if current is not None else None
-        )
+        current_default_id = current.default_translation_id if current is not None else None
         changing_translation = (
             current is not None
             and current.default_translation_id is not None
@@ -224,9 +222,8 @@ class PsalmCatalogInstaller:
         skipped = 0
         imported_numbers = self._progress.list_imported_psalm_numbers(installing.id, selected.id)
         for psalm_number in self._required_psalm_numbers:
-            should_skip = (
-                psalm_number in imported_numbers
-                and self._is_psalm_bundle_valid(selected.id, psalm_number)
+            should_skip = psalm_number in imported_numbers and self._is_psalm_bundle_valid(
+                selected.id, psalm_number
             )
             if should_skip:
                 skipped += 1
@@ -377,13 +374,13 @@ class PsalmCatalogInstaller:
         try:
             translations = self.list_translations()
             return _resolve_translation(translations, requested_translation_id)
-        except (TranslationCatalogUnavailableError, ScriptureProviderUnavailableError):
+        except TranslationCatalogUnavailableError, ScriptureProviderUnavailableError:
             normalized = requested_translation_id.strip()
             if not normalized:
                 raise
             try:
                 probed = self._provider.fetch_psalm(normalized, 1)
-            except (PsalmDownloadFailedError, PsalmPayloadInvalidError):
+            except PsalmDownloadFailedError, PsalmPayloadInvalidError:
                 raise
             canonical_id = probed.translation_id.strip() or normalized
             return TranslationInfo(

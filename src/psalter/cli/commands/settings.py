@@ -32,9 +32,7 @@ def register(app: typer.Typer) -> None:
             typer.echo("Installed translations:")
             for item in installed:
                 suffix = (
-                    " (default)"
-                    if item.translation_id == settings.default_translation_id
-                    else ""
+                    " (default)" if item.translation_id == settings.default_translation_id else ""
                 )
                 typer.echo(f"  {item.translation_id} - {item.psalm_count} Psalms{suffix}")
         if settings.initialized_at is not None:

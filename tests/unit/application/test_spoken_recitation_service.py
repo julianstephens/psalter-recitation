@@ -8,6 +8,7 @@ import pytest
 from psalter.application.dto import (
     AudioArtifact,
     AudioRecordingRequest,
+    PreparedAudioUpload,
     RecitationAssessmentDTO,
     RecitationSubmission,
     TranscriptArtifact,
@@ -56,6 +57,16 @@ class FakeRecitationService:
         self.calls.append("submit")
         self.last_submission_source = submission.source
         return self.assessment
+
+
+@dataclass
+class FakeUploadedAudioPreparer:
+    prepared_upload: PreparedAudioUpload
+    calls: list[str]
+
+    def prepare(self, *, passage_id: str, source: object, content_type: str) -> PreparedAudioUpload:
+        self.calls.append("prepare")
+        return self.prepared_upload
 
 
 def _assessment() -> RecitationAssessmentDTO:
@@ -111,6 +122,59 @@ def test_spoken_service_records_transcribes_and_submits(tmp_path: Path) -> None:
     assert result.result is RecitationResult.PASS
     assert calls == ["record", "transcribe", "submit"]
     assert audio_path.exists() is False
+    assert transcript_path.exists() is False
+
+
+def test_spoken_service_prepares_upload_transcribes_and_submits(tmp_path: Path) -> None:
+    audio_path = tmp_path / "prepared.wav"
+    audio_path.write_bytes(b"wav")
+    source_path = tmp_path / "upload.webm"
+    source_path.write_bytes(b"webm")
+    transcript_path = tmp_path / "transcript.txt"
+    transcript_path.write_text("the lord is my shepherd", encoding="utf-8")
+
+    calls: list[str] = []
+    service = SpokenRecitationService(
+        recorder=FakeRecorder(
+            artifact=AudioArtifact(
+                path=audio_path, sample_rate_hz=16000, channels=1, duration_seconds=1.2
+            ),
+            calls=calls,
+        ),
+        transcriber=FakeTranscriber(
+            artifact=TranscriptArtifact(
+                text="the lord is my shepherd",
+                provider="whisper.cpp",
+                model="m.bin",
+                raw_output_path=transcript_path,
+            ),
+            calls=calls,
+        ),
+        recitation_service=FakeRecitationService(assessment=_assessment(), calls=calls),
+        uploaded_audio_preparer=FakeUploadedAudioPreparer(
+            prepared_upload=PreparedAudioUpload(
+                artifact=AudioArtifact(
+                    path=audio_path,
+                    sample_rate_hz=16000,
+                    channels=1,
+                    duration_seconds=1.2,
+                ),
+                cleanup_paths=(source_path,),
+            ),
+            calls=calls,
+        ),
+    )
+
+    result = service.prepare_transcribe_and_submit_uploaded(
+        passage_id="p1",
+        source=object(),
+        content_type="audio/webm",
+    )
+
+    assert result.result is RecitationResult.PASS
+    assert calls == ["prepare", "transcribe", "submit"]
+    assert audio_path.exists() is False
+    assert source_path.exists() is False
     assert transcript_path.exists() is False
 
 

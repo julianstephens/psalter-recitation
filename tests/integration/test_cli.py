@@ -51,6 +51,22 @@ def test_psalter_progress_works_after_init(tmp_path: Path) -> None:
     assert "Reviews due: 0" in result.output
 
 
+def test_psalter_learn_can_advance_into_practice(tmp_path: Path) -> None:
+    runner = CliRunner()
+    _init_catalog(runner, tmp_path)
+
+    result = runner.invoke(
+        app,
+        ["learn", "1", "--data-dir", str(tmp_path)],
+        input="y\nn\n",
+        env=_env(),
+    )
+    assert result.exit_code == 0
+    assert "Psalm 1" in result.output
+    assert "Current section:" in result.output
+    assert "Complete practice level" in result.output
+
+
 def test_psalm_show_uses_default_translation_after_init(tmp_path: Path) -> None:
     runner = CliRunner()
     _init_catalog(runner, tmp_path)

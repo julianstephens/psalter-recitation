@@ -85,7 +85,9 @@ def build_config(data_dir: Path | None = None) -> AppConfig:
         )
 
     recorder = None
-    recorder_executable = _parse_optional_path("PSALTER_RECORDER_EXECUTABLE")
+    recorder_executable = _parse_optional_path("PSALTER_FFMPEG_EXECUTABLE") or _parse_optional_path(
+        "PSALTER_RECORDER_EXECUTABLE"
+    )
     if recorder_executable is not None:
         recorder = FfmpegRecorderConfig(
             executable_path=recorder_executable,

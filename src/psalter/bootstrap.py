@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from psalter.adapters.audio import FfmpegAudioRecorder, UnsupportedAudioRecorder
+from psalter.adapters.audio import (
+    FfmpegAudioRecorder,
+    FfmpegUploadedAudioPreparer,
+    UnsupportedAudioRecorder,
+)
 from psalter.adapters.persistence import (
     SqliteCatalogImportProgressRepository,
     SqliteDatabase,
@@ -131,6 +135,11 @@ def build_container(config: AppConfig | None = None) -> Container:
         transcriber=transcriber,
         recitation_service=recitation_service,
         retention_policy=retention_policy,
+        uploaded_audio_preparer=(
+            FfmpegUploadedAudioPreparer(resolved.recorder)
+            if resolved.recorder is not None
+            else None
+        ),
     )
     review_service = ReviewService(
         reviews=review_repo,

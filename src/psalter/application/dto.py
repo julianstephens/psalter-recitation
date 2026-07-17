@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
+from enum import StrEnum
 from pathlib import Path
 
 from psalter.domain.learning import LearningPhase
@@ -33,6 +34,12 @@ class TranscriptArtifact:
     provider: str
     model: str
     raw_output_path: Path | None
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedAudioUpload:
+    artifact: AudioArtifact
+    cleanup_paths: tuple[Path, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -212,3 +219,31 @@ class PsalmReviewItemDTO:
     due_label: str
     next_review_at: datetime | None
     passage_id: str
+
+
+class PsalmLearningScreen(StrEnum):
+    EXPOSURE = "exposure"
+    PRACTICE = "practice"
+    READY_FOR_RECITATION = "ready_for_recitation"
+    REINFORCEMENT = "reinforcement"
+    SECTION_COMPLETED = "section_completed"
+    CONSOLIDATION_STARTED = "consolidation_started"
+    CONSOLIDATION_UNAVAILABLE = "consolidation_unavailable"
+    PSALM_COMPLETED = "psalm_completed"
+    MANUAL_REVIEW = "manual_review"
+
+
+@dataclass(frozen=True, slots=True)
+class LearningTargetDTO:
+    token: str
+    label: str
+    kind: PassageKind
+
+
+@dataclass(frozen=True, slots=True)
+class PsalmLearningScreenDTO:
+    screen: PsalmLearningScreen
+    view: PsalmLearningViewDTO
+    active_target: LearningTargetDTO | None
+    practice: PracticeViewDTO | None
+    assessment: RecitationAssessmentDTO | None

@@ -58,6 +58,10 @@ class InvalidLearningTransitionError(ApplicationError):
     """Raised when a learning transition is invalid."""
 
 
+class StaleLearningTargetError(ApplicationError):
+    """Raised when a workflow action uses a stale active target token."""
+
+
 class InvalidPassageError(ApplicationError):
     """Raised when passage input fails validation."""
 

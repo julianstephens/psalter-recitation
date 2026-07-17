@@ -10,9 +10,10 @@ import typer
 
 from psalter.application.dto import (
     PassageDetailDTO,
+    PsalmLearningScreen,
+    PsalmLearningScreenDTO,
     PsalmLearningViewDTO,
     RecitationAssessmentDTO,
-    RecitationSubmission,
 )
 from psalter.application.errors import (
     ArtifactCleanupFailedError,
@@ -27,6 +28,7 @@ from psalter.application.errors import (
     PsalmLearningPlanConflictError,
     PsalmNotFoundError,
     PsalmTranslationAmbiguousError,
+    StaleLearningTargetError,
     TranscriberNotConfiguredError,
     TranscriptEmptyError,
     TranscriptOutputMissingError,
@@ -35,13 +37,12 @@ from psalter.application.errors import (
     WhisperModelNotFoundError,
     WhisperProcessFailedError,
 )
-from psalter.bootstrap import Container, build_container
+from psalter.application.services.workflow import PsalmLearningWorkflow
+from psalter.bootstrap import build_container
 from psalter.cli.readiness import require_ready
 from psalter.config import build_config
-from psalter.domain.learning import LearningPhase
 from psalter.domain.passage import PassageKind
-from psalter.domain.psalm import PsalmLearningStatus
-from psalter.domain.recitation import RecitationResult, RecitationSource
+from psalter.domain.recitation import RecitationResult
 
 
 def register(app: typer.Typer) -> None:
@@ -57,10 +58,15 @@ def register(app: typer.Typer) -> None:
         container = build_container(build_config(data_dir=data_dir))
         container.migrator.apply_pending()
         require_ready(container)
+        workflow = PsalmLearningWorkflow(
+            psalm_learning_service=container.psalm_learning_service,
+            learning_service=container.learning_service,
+            recitation_service=container.recitation_service,
+            spoken_recitation_service=container.spoken_recitation_service,
+        )
         try:
-            container.psalm_learning_service.begin_or_resume(
-                psalm_number=psalm_number,
-                translation_id=translation_id,
+            state = workflow.start_or_resume(
+                psalm_number=psalm_number, translation_id=translation_id
             )
         except (
             PsalmNotFoundError,
@@ -72,33 +78,16 @@ def register(app: typer.Typer) -> None:
             raise typer.Exit(code=1) from exc
 
         while True:
-            try:
-                view = container.psalm_learning_service.get_learning_view(
-                    psalm_number=psalm_number,
-                    translation_id=translation_id,
-                )
-            except (
-                PsalmNotFoundError,
-                PsalmTranslationAmbiguousError,
-                NoActivePassageError,
-            ) as exc:
-                typer.secho(str(exc), fg=typer.colors.RED, err=True)
-                raise typer.Exit(code=1) from exc
-
-            if _render_completed_states(view):
+            if _render_completed_states(state):
                 return
 
-            active = view.active_passage
+            active = state.view.active_passage
             if active is None:
                 typer.secho("No active passage is available.", fg=typer.colors.RED, err=True)
                 raise typer.Exit(code=1)
-            session = container.learning_service.get_current_session(active.id)
-            if session is None:
-                typer.secho("Learning session was not initialized.", fg=typer.colors.RED, err=True)
-                raise typer.Exit(code=1)
 
-            _print_header(view, active)
-            if session.phase is LearningPhase.EXPOSURE:
+            _print_header(state.view, active)
+            if state.screen is PsalmLearningScreen.EXPOSURE:
                 typer.echo("")
                 typer.echo(active.canonical_text)
                 prompt = (
@@ -109,17 +98,21 @@ def register(app: typer.Typer) -> None:
                 if not typer.confirm("\n\n" + prompt, default=True):
                     return
                 try:
-                    if active.kind is PassageKind.CONSOLIDATION:
-                        container.learning_service.complete_exposure_and_mark_ready(active.id)
-                    else:
-                        container.learning_service.complete_exposure(active.id)
+                    state = workflow.complete_exposure(
+                        psalm_number=psalm_number,
+                        translation_id=translation_id,
+                        target_token=state.active_target.token if state.active_target else None,
+                    )
                 except InvalidLearningTransitionError as exc:
                     typer.secho(str(exc), fg=typer.colors.RED, err=True)
                     raise typer.Exit(code=1) from exc
                 continue
 
-            if session.phase is LearningPhase.PRACTICE:
-                practice = container.learning_service.get_practice_view(active.id)
+            if state.screen is PsalmLearningScreen.PRACTICE:
+                practice = state.practice
+                if practice is None:
+                    typer.secho("Practice view was not available.", fg=typer.colors.RED, err=True)
+                    raise typer.Exit(code=1)
                 typer.echo("")
                 typer.echo(practice.masked_text)
                 if not typer.confirm(
@@ -128,78 +121,82 @@ def register(app: typer.Typer) -> None:
                 ):
                     return
                 try:
-                    container.learning_service.complete_practice_level(active.id)
+                    state = workflow.complete_practice(
+                        psalm_number=psalm_number,
+                        translation_id=translation_id,
+                        target_token=state.active_target.token if state.active_target else None,
+                    )
                 except InvalidLearningTransitionError as exc:
                     typer.secho(str(exc), fg=typer.colors.RED, err=True)
                     raise typer.Exit(code=1) from exc
                 continue
 
-            if session.phase is LearningPhase.READY_FOR_RECITATION:
-                assessment = _run_recitation(container, active)
+            if state.screen is PsalmLearningScreen.READY_FOR_RECITATION:
+                state = _run_recitation(workflow, state, psalm_number, translation_id)
+                assessment = state.assessment
+                if assessment is None:
+                    typer.secho(
+                        "Recitation assessment was not available.", fg=typer.colors.RED, err=True
+                    )
+                    raise typer.Exit(code=1)
                 _print_assessment(assessment)
-                if (
-                    assessment.result is RecitationResult.PASS
-                    and assessment.remaining_successes_required == 0
-                ):
-                    try:
-                        updated_view = (
-                            container.psalm_learning_service.advance_after_passage_learned(
-                                view.psalm.id
-                            )
-                        )
-                    except (
-                        NoActivePassageError,
-                        PsalmLearningPlanConflictError,
-                    ) as exc:
-                        typer.secho(str(exc), fg=typer.colors.RED, err=True)
-                        raise typer.Exit(code=1) from exc
-                    if active.kind is PassageKind.CONSOLIDATION:
-                        typer.echo("Whole Psalm learned. Use `psalter review` for due reviews.")
-                        if updated_view.plan.status is PsalmLearningStatus.LEARNED:
-                            return
-                    else:
-                        typer.echo("Section learned.")
-                        if (
-                            updated_view.plan.status is PsalmLearningStatus.CONSOLIDATING
-                            and updated_view.active_passage is not None
-                            and updated_view.active_passage.kind is PassageKind.CONSOLIDATION
-                        ):
-                            typer.echo("All sections learned. Entering whole-Psalm consolidation.")
-                        elif updated_view.active_passage is not None:
-                            typer.echo(
-                                f"Advancing to {_section_label(updated_view.active_passage)}."
-                            )
-                    if _render_completed_states(updated_view):
-                        return
+                if state.screen is PsalmLearningScreen.PSALM_COMPLETED:
+                    typer.echo("Whole Psalm learned. Use `psalter review` for due reviews.")
+                    return
+                if state.screen is PsalmLearningScreen.CONSOLIDATION_UNAVAILABLE:
+                    typer.echo(f"Psalm {psalm_number} is only partially imported.")
+                    typer.echo("Whole-Psalm consolidation is unavailable.")
+                    return
+                if state.screen is PsalmLearningScreen.CONSOLIDATION_STARTED:
+                    typer.echo("All sections learned. Entering whole-Psalm consolidation.")
+                    state = workflow.start_or_resume(
+                        psalm_number=psalm_number,
+                        translation_id=translation_id,
+                    )
+                    continue
+                if state.screen is PsalmLearningScreen.SECTION_COMPLETED:
+                    typer.echo("Section learned.")
+                    state = workflow.start_or_resume(
+                        psalm_number=psalm_number,
+                        translation_id=translation_id,
+                    )
+                    if state.view.active_passage is not None:
+                        typer.echo(f"Advancing to {_section_label(state.view.active_passage)}.")
                     continue
                 if assessment.result is RecitationResult.PASS:
                     typer.echo("Successful recitation recorded. One more pass required.")
                     continue
-                if assessment.result is RecitationResult.RETRY:
-                    _handle_reinforcement(container, active.id, active.canonical_text)
+                if state.screen is PsalmLearningScreen.REINFORCEMENT:
+                    state = _handle_reinforcement(
+                        workflow,
+                        state,
+                        psalm_number,
+                        translation_id,
+                        active,
+                    )
                     continue
                 typer.echo("Manual review required.")
                 return
 
-            if session.phase is LearningPhase.NEEDS_REINFORCEMENT:
-                _handle_reinforcement(container, active.id, active.canonical_text)
-                continue
-
-            if session.phase is LearningPhase.LEARNED:
-                updated = container.psalm_learning_service.advance_after_passage_learned(
-                    view.psalm.id
+            if state.screen is PsalmLearningScreen.REINFORCEMENT:
+                state = _handle_reinforcement(
+                    workflow,
+                    state,
+                    psalm_number,
+                    translation_id,
+                    active,
                 )
-                if _render_completed_states(updated):
-                    return
                 continue
+            typer.echo("Manual review required.")
+            return
 
 
-def _render_completed_states(view: PsalmLearningViewDTO) -> bool:
-    if view.plan.status is PsalmLearningStatus.LEARNED:
+def _render_completed_states(state: PsalmLearningScreenDTO) -> bool:
+    if state.screen is PsalmLearningScreen.PSALM_COMPLETED:
         typer.echo("Psalm learned. Use `psalter review` for due review sessions.")
         return True
-    if view.plan.status is PsalmLearningStatus.CONSOLIDATING and not view.consolidation_available:
-        typer.echo(f"Psalm {view.psalm.psalm_number} is only partially imported.")
+    if state.screen is PsalmLearningScreen.CONSOLIDATION_UNAVAILABLE:
+        typer.echo(f"Psalm {state.view.psalm.psalm_number} is only partially imported.")
         typer.echo("Whole-Psalm consolidation is unavailable.")
         return True
     return False
@@ -221,7 +218,16 @@ def _print_header(view: PsalmLearningViewDTO, passage: PassageDetailDTO) -> None
         typer.echo("Whole-Psalm consolidation unavailable: partial import.")
 
 
-def _run_recitation(container: Container, passage: PassageDetailDTO) -> RecitationAssessmentDTO:
+def _run_recitation(
+    workflow: PsalmLearningWorkflow,
+    state: PsalmLearningScreenDTO,
+    psalm_number: int,
+    translation_id: str | None,
+) -> PsalmLearningScreenDTO:
+    passage = state.view.active_passage
+    if passage is None:
+        typer.secho("No active passage is available.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
     typer.echo("")
     method = typer.prompt("Recitation method [typed/spoken]", default="typed").strip().casefold()
     if method not in {"typed", "spoken"}:
@@ -235,12 +241,11 @@ def _run_recitation(container: Container, passage: PassageDetailDTO) -> Recitati
         if method == "typed":
             typer.echo("Type your recitation. End with a line containing only .done")
             text = _read_multiline_submission()
-            return container.recitation_service.submit_text(
-                RecitationSubmission(
-                    passage_id=passage.id,
-                    source=RecitationSource.TYPED,
-                    text=text,
-                )
+            return workflow.submit_typed_recitation(
+                psalm_number=psalm_number,
+                translation_id=translation_id,
+                text=text,
+                target_token=state.active_target.token if state.active_target else None,
             )
 
         typer.echo("Spoken recitation selected.")
@@ -248,8 +253,10 @@ def _run_recitation(container: Container, passage: PassageDetailDTO) -> Recitati
         _await_enter()
         typer.echo("Recording...")
         typer.echo("Press Enter to stop.")
-        return container.spoken_recitation_service.record_transcribe_and_submit(
-            passage.id,
+        return workflow.submit_recorded_recitation(
+            psalm_number=psalm_number,
+            translation_id=translation_id,
+            target_token=state.active_target.token if state.active_target else None,
             wait_for_stop=_wait_for_enter_with_timeout,
             before_transcribe=_print_transcribing,
         )
@@ -269,6 +276,7 @@ def _run_recitation(container: Container, passage: PassageDetailDTO) -> Recitati
         TranscriptEmptyError,
         ArtifactCleanupFailedError,
         UnsupportedAudioPlatformError,
+        StaleLearningTargetError,
     ) as exc:
         typer.secho(str(exc), fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1) from exc
@@ -352,7 +360,13 @@ def _print_assessment(assessment: RecitationAssessmentDTO) -> None:
             typer.echo(f'- expected "{expected}", received "{received}"')
 
 
-def _handle_reinforcement(container: Container, passage_id: str, canonical_text: str) -> None:
+def _handle_reinforcement(
+    workflow: PsalmLearningWorkflow,
+    state: PsalmLearningScreenDTO,
+    psalm_number: int,
+    translation_id: str | None,
+    passage: PassageDetailDTO,
+) -> PsalmLearningScreenDTO:
     selection = (
         typer.prompt(
             "Choose reinforcement action: view, resume, exit",
@@ -363,9 +377,12 @@ def _handle_reinforcement(container: Container, passage_id: str, canonical_text:
     )
     if selection == "view":
         typer.echo("")
-        typer.echo(canonical_text)
-        return
+        typer.echo(passage.canonical_text)
+        return state
     if selection == "resume":
-        container.learning_service.resume_reinforcement(passage_id)
-        return
+        return workflow.resume_reinforcement(
+            psalm_number=psalm_number,
+            translation_id=translation_id,
+            target_token=state.active_target.token if state.active_target else None,
+        )
     raise typer.Exit(code=0)
