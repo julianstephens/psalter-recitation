@@ -1,0 +1,45 @@
+[project]
+name = "psalter-recitation"
+version = "0.1.0"
+requires-python = ">=3.14"
+dependencies = [
+	"typer>=0.16.0",
+]
+
+[project.scripts]
+psalter = "psalter.cli.app:run"
+
+[build-system]
+requires = ["uv_build>=0.7.19,<0.8.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+	"mypy>=1.16.0",
+	"pytest>=8.4.0",
+	"pytest-cov>=6.2.0",
+	"ruff>=0.12.0",
+]
+
+[tool.uv.build-backend]
+module-root = "src"
+module-name = "psalter"
+
+[tool.pytest.ini_options]
+addopts = "-q --cov=psalter --cov-report=term-missing"
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "N", "A", "C4", "SIM"]
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+mypy_path = ["src"]
+packages = ["psalter"]
+
