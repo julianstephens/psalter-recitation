@@ -42,8 +42,12 @@ export function AppShell() {
             </Stack>
 
             <HStack gap="4" wrap="wrap">
+              <NavLink to="/dashboard" label="Home" />
               <NavLink to="/setup" label="Setup" />
-              <NavLink to="/dashboard" label="Dashboard" />
+              <NavLink to="/psalms" label="Psalms" />
+              <NavLink to="/reviews" label="Reviews" />
+              <NavLink to="/progress" label="Progress" />
+              <NavLink to="/settings" label="Settings" />
             </HStack>
           </Flex>
 

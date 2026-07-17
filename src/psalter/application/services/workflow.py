@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import BinaryIO
 
 from psalter.application.dto import (
     LearningTargetDTO,
@@ -165,6 +166,32 @@ class PsalmLearningWorkflow:
             active.id,
             wait_for_stop=wait_for_stop,
             before_transcribe=before_transcribe,
+        )
+        return self._screen_after_assessment(
+            previous_view=view,
+            previous_active=active,
+            assessment=assessment,
+        )
+
+    def submit_uploaded_audio(
+        self,
+        *,
+        psalm_number: int,
+        source: BinaryIO,
+        content_type: str,
+        translation_id: str | None = None,
+        target_token: str | None = None,
+    ) -> PsalmLearningScreenDTO:
+        view = self._psalm_learning_service.get_learning_view(
+            psalm_number=psalm_number,
+            translation_id=translation_id,
+        )
+        active = self._require_active_passage(view.active_passage)
+        self._validate_target_token(view=view, target_token=target_token)
+        assessment = self._spoken_recitation_service.prepare_transcribe_and_submit_uploaded(
+            passage_id=active.id,
+            source=source,
+            content_type=content_type,
         )
         return self._screen_after_assessment(
             previous_view=view,

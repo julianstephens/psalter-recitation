@@ -12,6 +12,32 @@ uv run psalter progress
 uv run psalter review
 ```
 
+## Web development
+
+The browser UI lives in a separate `web/` workspace and talks to the Python application through
+the FastAPI adapter in `src/psalter/web/`.
+
+For local web development without Docker:
+
+```bash
+uv run uvicorn psalter.web.app:create_app --factory --reload
+cd web
+npm install
+npm run dev
+```
+
+For a two-container development stack:
+
+```bash
+docker compose -f compose.yaml -f compose.dev.yaml up --build
+```
+
+For a production-style local build:
+
+```bash
+docker compose -f compose.yaml -f compose.production.yaml up --build -d
+```
+
 `psalter init` installs a complete translation catalog (Psalms 1-150), preserves verse
 boundaries, generates internal learning sections, and stores one selected translation as the
 default.

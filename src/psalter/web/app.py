@@ -15,6 +15,7 @@ from psalter.logging import debug_event, get_logger
 from psalter.web.errors import application_error_response, validation_error_response
 from psalter.web.routes.health import router as health_router
 from psalter.web.routes.installation import router as installation_router
+from psalter.web.routes.learning import router as learning_router
 from psalter.web.routes.progress import router as progress_router
 from psalter.web.routes.psalms import router as psalms_router
 from psalter.web.routes.reviews import router as reviews_router
@@ -64,6 +65,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
 
     app.include_router(health_router)
     app.include_router(installation_router)
+    app.include_router(learning_router)
     app.include_router(psalms_router)
     app.include_router(progress_router)
     app.include_router(reviews_router)

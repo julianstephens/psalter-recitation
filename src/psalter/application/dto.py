@@ -37,6 +37,12 @@ class TranscriptArtifact:
 
 
 @dataclass(frozen=True, slots=True)
+class PreparedAudioUpload:
+    artifact: AudioArtifact
+    cleanup_paths: tuple[Path, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class LearningSessionDTO:
     id: str
     passage_id: str
