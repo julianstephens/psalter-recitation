@@ -36,6 +36,21 @@ uv run psalter passage list
 uv run psalter passage show esv-psalm-23-1-1
 ```
 
+### Seed passages from the helloao API
+
+```bash
+uv run python scripts/seed_passages_from_api.py \
+  --translation BSB \
+  --book PSA \
+  --passage 23:1-3 \
+  --passage 121:1-2
+```
+
+Optional flags:
+
+- `--data-dir /path/to/data`
+- `--fail-on-existing`
+
 ## Learn workflow
 
 ```bash

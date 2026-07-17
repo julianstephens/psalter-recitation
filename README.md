@@ -41,6 +41,7 @@ Currently unsupported / intentionally deferred:
 uv sync
 uv run psalter init
 uv run psalter passage add --translation-id esv --psalm 23 --start-verse 1 --end-verse 1 --text "The LORD is my shepherd."
+uv run python scripts/seed_passages_from_api.py --translation BSB --passage 23:1-3
 uv run psalter passage list
 uv run psalter passage show esv-psalm-23-1-1
 uv run psalter learn esv-psalm-23-1-1
@@ -98,6 +99,23 @@ Known limitations:
 - Tested recording command construction currently targets ffmpeg on desktop platforms.
 
 Assessment currently performs textual normalization/alignment only. It does not evaluate pronunciation and does not accept semantic paraphrase substitutions.
+
+## Passage seeding script
+
+You can seed Psalm passages directly from the bible.helloao.org API:
+
+```bash
+uv run python scripts/seed_passages_from_api.py \
+  --translation BSB \
+  --book PSA \
+  --passage 23:1-3 \
+  --passage 121:1-2
+```
+
+Options:
+
+- `--data-dir`: override psalter data directory.
+- `--fail-on-existing`: exit non-zero if any requested passage already exists.
 
 ## Project Structure
 
