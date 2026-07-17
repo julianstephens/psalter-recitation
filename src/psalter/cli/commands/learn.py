@@ -106,7 +106,7 @@ def register(app: typer.Typer) -> None:
                     if active.kind is PassageKind.CONSOLIDATION
                     else "Read attentively, then continue to practice?"
                 )
-                if not typer.confirm(prompt, default=True):
+                if not typer.confirm("\n\n" + prompt, default=True):
                     return
                 try:
                     if active.kind is PassageKind.CONSOLIDATION:
