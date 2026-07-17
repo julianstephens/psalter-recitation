@@ -30,9 +30,10 @@ class HelloAoScriptureCatalogProvider(ScriptureCatalogProvider):
 
     def list_translations(self) -> tuple[TranslationInfo, ...]:
         endpoints = (
+            "/available_translations.json",
+            "/available_translations",
             "/translations.json",
             "/translations",
-            "/catalog/translations",
         )
         last_error: Exception | None = None
         for endpoint in endpoints:
@@ -136,7 +137,11 @@ class MockScriptureCatalogProvider(ScriptureCatalogProvider):
                 id="WEB", name="World English Bible", language="en", supports_psalms=True
             ),
         )
-        debug_event(logger, "mock_translation_catalog_returned", translation_count=len(translations))
+        debug_event(
+            logger,
+            "mock_translation_catalog_returned",
+            translation_count=len(translations),
+        )
         return translations
 
     def fetch_psalm(self, translation_id: str, psalm_number: int) -> ImportedPsalm:
