@@ -119,3 +119,106 @@ def test_progress_and_review_are_psalm_labeled(tmp_path: Path) -> None:
     review_result = runner.invoke(app, ["review", "--data-dir", str(tmp_path)])
     assert review_result.exit_code == 0
     assert "No reviews due." in review_result.output
+
+
+def test_passage_add_supports_multiple_partial_sections(tmp_path: Path) -> None:
+    runner = CliRunner()
+    init_result = runner.invoke(app, ["init", "--data-dir", str(tmp_path)])
+    assert init_result.exit_code == 0
+
+    first = runner.invoke(
+        app,
+        [
+            "passage",
+            "add",
+            "--data-dir",
+            str(tmp_path),
+            "--translation-id",
+            "esv",
+            "--psalm",
+            "90",
+            "--start-verse",
+            "1",
+            "--end-verse",
+            "4",
+            "--text",
+            "Lord, thou hast been our dwelling place.",
+        ],
+    )
+    assert first.exit_code == 0
+
+    second = runner.invoke(
+        app,
+        [
+            "passage",
+            "add",
+            "--data-dir",
+            str(tmp_path),
+            "--translation-id",
+            "esv",
+            "--psalm",
+            "90",
+            "--start-verse",
+            "5",
+            "--end-verse",
+            "8",
+            "--text",
+            "Thou carriest them away as with a flood.",
+        ],
+    )
+    assert second.exit_code == 0
+
+    listed = runner.invoke(
+        app,
+        ["passage", "list", "--psalm", "90", "--data-dir", str(tmp_path)],
+    )
+    assert listed.exit_code == 0
+    assert "esv-psalm-90-1-4" in listed.output
+    assert "esv-psalm-90-5-8" in listed.output
+    assert listed.output.index("esv-psalm-90-1-4") < listed.output.index("esv-psalm-90-5-8")
+
+
+def test_partial_passage_import_cannot_be_upgraded_with_psalm_add(tmp_path: Path) -> None:
+    runner = CliRunner()
+    init_result = runner.invoke(app, ["init", "--data-dir", str(tmp_path)])
+    assert init_result.exit_code == 0
+
+    passage_result = runner.invoke(
+        app,
+        [
+            "passage",
+            "add",
+            "--data-dir",
+            str(tmp_path),
+            "--translation-id",
+            "esv",
+            "--psalm",
+            "90",
+            "--start-verse",
+            "1",
+            "--end-verse",
+            "4",
+            "--text",
+            "Lord, thou hast been our dwelling place.",
+        ],
+    )
+    assert passage_result.exit_code == 0
+
+    psalm_result = runner.invoke(
+        app,
+        [
+            "psalm",
+            "add",
+            "90",
+            "--data-dir",
+            str(tmp_path),
+            "--translation-id",
+            "esv",
+            "--verse",
+            "1:Lord, thou hast been our dwelling place.",
+            "--verse",
+            "2:Before the mountains were brought forth.",
+        ],
+    )
+    assert psalm_result.exit_code == 1
+    assert "partial import" in psalm_result.output

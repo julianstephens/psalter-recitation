@@ -7,10 +7,11 @@ from psalter.application.errors import (
     InvalidPassageError,
     PassageAlreadyExistsError,
     PassageNotFoundError,
+    PsalmSegmentationConflictError,
 )
 from psalter.domain.errors import InvariantViolationError
 from psalter.domain.passage import Passage, PassageKind
-from psalter.domain.psalm import Psalm, PsalmCompleteness
+from psalter.domain.psalm import PsalmCompleteness
 from psalter.ports.passage_repository import PassageRepository
 from psalter.ports.psalm_repository import PsalmRepository
 
@@ -57,22 +58,24 @@ class PassageService:
             )
         except InvariantViolationError as exc:
             raise InvalidPassageError(str(exc)) from exc
-        if self._psalms is not None and self._psalms.get_by_id(passage.psalm_id) is None:
-            self._psalms.add_psalm_bundle(
-                Psalm(
-                    id=passage.psalm_id,
-                    translation_id=passage.translation_id,
-                    psalm_number=passage.psalm_number,
-                    canonical_text=passage.canonical_text,
-                    verse_count=passage.end_verse - passage.start_verse + 1,
-                    completeness=PsalmCompleteness.PARTIAL,
-                    verses=(),
-                ),
-                (passage,),
-            )
+        persisted = passage
+        if self._psalms is not None:
+            existing_psalm = self._psalms.get_by_id(passage.psalm_id)
+            if (
+                existing_psalm is not None
+                and existing_psalm.completeness is PsalmCompleteness.COMPLETE
+            ):
+                raise InvalidPassageError(
+                    "Manual passage import is only supported for partial Psalms. "
+                    "This Psalm is already fully imported."
+                )
+            try:
+                persisted = self._psalms.add_partial_psalm_passage(passage)
+            except PsalmSegmentationConflictError as exc:
+                raise InvalidPassageError(str(exc)) from exc
         else:
             self._passages.add(passage)
-        return _to_detail_dto(passage)
+        return _to_detail_dto(persisted)
 
     def list_all(self) -> list[PassageSummaryDTO]:
         return [_to_summary_dto(item) for item in self._passages.list_all()]

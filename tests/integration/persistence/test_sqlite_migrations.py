@@ -50,9 +50,15 @@ def test_sqlite_foreign_keys_enabled(tmp_path: Path) -> None:
 
     with db.open_connection() as conn:
         fk_status = conn.execute("PRAGMA foreign_keys").fetchone()
+        plan_foreign_keys = conn.execute("PRAGMA foreign_key_list(psalm_learning_plans)").fetchall()
 
     assert fk_status is not None
     assert int(fk_status[0]) == 1
+    fk_targets = {
+        (str(row["table"]), str(row["from"]), str(row["to"])) for row in plan_foreign_keys
+    }
+    assert ("psalms", "psalm_id", "id") in fk_targets
+    assert ("passages", "active_passage_id", "id") in fk_targets
 
 
 def test_attempt_diagnostics_round_trip_and_session_foreign_key(tmp_path: Path) -> None:

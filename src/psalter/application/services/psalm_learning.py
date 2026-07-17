@@ -13,6 +13,7 @@ from psalter.application.dto import (
 from psalter.application.errors import (
     InvalidLearningTransitionError,
     NoActivePassageError,
+    PersistenceConflictError,
     PsalmLearningPlanConflictError,
     PsalmNotFoundError,
     PsalmTranslationAmbiguousError,
@@ -310,7 +311,7 @@ class PsalmLearningService:
     def _save_plan(self, plan: PsalmLearningPlan, expected_version: int | None = None) -> None:
         try:
             self._plans.upsert(plan, expected_version=expected_version)
-        except Exception as exc:
+        except PersistenceConflictError as exc:
             raise PsalmLearningPlanConflictError(
                 f"Psalm learning plan changed during update for {plan.psalm_id}; retry."
             ) from exc

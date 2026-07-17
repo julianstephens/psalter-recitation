@@ -40,6 +40,8 @@ uv run psalter passage list --psalm 23
 uv run psalter passage show esv-psalm-23-1-1
 ```
 
+If you use `psalter passage add`, it creates or extends a partial Psalm import. Upgrading that Psalm to a complete Psalm import later through `psalter psalm add` is not supported yet.
+
 ### Seed complete Psalms from the helloao API
 
 ```bash

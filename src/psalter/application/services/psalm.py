@@ -30,7 +30,13 @@ class PsalmService:
         verses: tuple[tuple[int, str], ...],
     ) -> PsalmDetailDTO:
         psalm_id = build_psalm_id(translation_id=translation_id, psalm_number=psalm_number)
-        if self._psalms.get_by_id(psalm_id) is not None:
+        existing = self._psalms.get_by_id(psalm_id)
+        if existing is not None:
+            if existing.completeness is PsalmCompleteness.PARTIAL:
+                raise PsalmAlreadyExistsError(
+                    f"Psalm {translation_id} {psalm_number} already exists as a partial import. "
+                    "Upgrading a partial Psalm to a complete Psalm import is not supported yet."
+                )
             raise PsalmAlreadyExistsError(
                 f"Psalm already exists: {translation_id} Psalm {psalm_number}"
             )

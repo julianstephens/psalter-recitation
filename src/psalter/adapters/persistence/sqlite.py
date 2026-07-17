@@ -4,7 +4,7 @@ import json
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -12,6 +12,7 @@ from psalter.application.errors import (
     PassageAlreadyExistsError,
     PersistenceConflictError,
     PsalmAlreadyExistsError,
+    PsalmSegmentationConflictError,
 )
 from psalter.domain.learning import LearningPhase, LearningSession
 from psalter.domain.passage import Passage, PassageKind
@@ -161,7 +162,12 @@ class SqlitePsalmRepository:
                 conn.execute(
                     """
                     INSERT INTO psalms(
-                        id, translation_id, psalm_number, canonical_text, verse_count, completeness
+                        id,
+                        translation_id,
+                        psalm_number,
+                        canonical_text,
+                        verse_count,
+                        completeness
                     ) VALUES (?, ?, ?, ?, ?, ?)
                     """,
                     (
@@ -214,6 +220,146 @@ class SqlitePsalmRepository:
             raise PassageAlreadyExistsError(
                 "Generated Psalm passages conflict with existing data"
             ) from exc
+
+    def add_partial_psalm_passage(self, passage: Passage) -> Passage:
+        with self._db.open_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = conn.execute(
+                    """
+                    SELECT completeness
+                    FROM psalms
+                    WHERE id = ?
+                    LIMIT 1
+                    """,
+                    (passage.psalm_id,),
+                ).fetchone()
+                if row is None:
+                    conn.execute(
+                        """
+                        INSERT INTO psalms(
+                            id,
+                            translation_id,
+                            psalm_number,
+                            canonical_text,
+                            verse_count,
+                            completeness
+                        ) VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            passage.psalm_id,
+                            passage.translation_id,
+                            passage.psalm_number,
+                            passage.canonical_text,
+                            passage.end_verse - passage.start_verse + 1,
+                            PsalmCompleteness.PARTIAL.value,
+                        ),
+                    )
+                elif str(row["completeness"]) != PsalmCompleteness.PARTIAL.value:
+                    raise PsalmSegmentationConflictError(
+                        f"Psalm {passage.translation_id} "
+                        f"{passage.psalm_number} is already complete."
+                    )
+
+                overlapping = conn.execute(
+                    """
+                    SELECT 1
+                    FROM passages
+                    WHERE psalm_id = ?
+                      AND kind = ?
+                      AND start_verse <= ?
+                      AND end_verse >= ?
+                    LIMIT 1
+                    """,
+                    (
+                        passage.psalm_id,
+                        PassageKind.SECTION.value,
+                        passage.end_verse,
+                        passage.start_verse,
+                    ),
+                ).fetchone()
+                if overlapping is not None:
+                    raise PsalmSegmentationConflictError(
+                        "Manual passage import cannot overlap an existing "
+                        "passage in the same Psalm."
+                    )
+
+                next_sequence_row = conn.execute(
+                    """
+                    SELECT COALESCE(MAX(sequence_number), 0) + 1 AS next_sequence
+                    FROM passages
+                    WHERE psalm_id = ? AND kind = ?
+                    """,
+                    (passage.psalm_id, PassageKind.SECTION.value),
+                ).fetchone()
+                next_sequence = int(next_sequence_row["next_sequence"]) if next_sequence_row else 1
+                persisted = replace(passage, sequence_number=next_sequence)
+                conn.execute(
+                    """
+                    INSERT INTO passages(
+                        id, psalm_id, translation_id, psalm_number, start_verse, end_verse,
+                        canonical_text, sequence_number, kind, segmentation_policy_version
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        persisted.id,
+                        persisted.psalm_id,
+                        persisted.translation_id,
+                        persisted.psalm_number,
+                        persisted.start_verse,
+                        persisted.end_verse,
+                        persisted.canonical_text,
+                        persisted.sequence_number,
+                        persisted.kind.value,
+                        persisted.segmentation_policy_version,
+                    ),
+                )
+                summary = conn.execute(
+                    """
+                    SELECT
+                        COALESCE(SUM(end_verse - start_verse + 1), 0) AS verse_count,
+                        (
+                            SELECT group_concat(item.canonical_text, char(10))
+                            FROM (
+                                SELECT canonical_text
+                                FROM passages ordered
+                                WHERE ordered.psalm_id = ?
+                                  AND ordered.kind = ?
+                                ORDER BY ordered.sequence_number ASC, ordered.id ASC
+                            ) item
+                        ) AS canonical_text
+                    FROM passages
+                    WHERE psalm_id = ? AND kind = ?
+                    """,
+                    (
+                        passage.psalm_id,
+                        PassageKind.SECTION.value,
+                        passage.psalm_id,
+                        PassageKind.SECTION.value,
+                    ),
+                ).fetchone()
+                conn.execute(
+                    """
+                    UPDATE psalms
+                    SET canonical_text = ?, verse_count = ?, completeness = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        (
+                            str(summary["canonical_text"])
+                            if summary and summary["canonical_text"]
+                            else ""
+                        ),
+                        int(summary["verse_count"]) if summary else 0,
+                        PsalmCompleteness.PARTIAL.value,
+                        passage.psalm_id,
+                    ),
+                )
+            except sqlite3.Error:
+                conn.rollback()
+                raise
+            conn.commit()
+            return persisted
 
     def get_by_id(self, psalm_id: str) -> Psalm | None:
         with self._db.open_connection() as conn:

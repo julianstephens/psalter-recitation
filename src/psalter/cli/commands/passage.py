@@ -9,6 +9,7 @@ from psalter.application.errors import (
     InvalidPassageError,
     PassageAlreadyExistsError,
     PassageNotFoundError,
+    PsalmAlreadyExistsError,
 )
 from psalter.bootstrap import build_container
 from psalter.config import build_config
@@ -46,10 +47,14 @@ def register(app: typer.Typer) -> None:
                 end_verse=resolved_end,
                 canonical_text=resolved_text,
             )
-        except (PassageAlreadyExistsError, InvalidPassageError) as exc:
+        except (PassageAlreadyExistsError, InvalidPassageError, PsalmAlreadyExistsError) as exc:
             typer.secho(str(exc), fg=typer.colors.RED, err=True)
             raise typer.Exit(code=1) from exc
         typer.echo(f"Added passage {added.id}")
+        typer.echo(
+            "Note: passage add creates or extends a partial Psalm import. "
+            "Upgrading that Psalm to a complete Psalm import is not supported yet."
+        )
 
     @passage_app.command("list")
     def list_command(

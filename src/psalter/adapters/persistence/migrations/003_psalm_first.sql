@@ -37,17 +37,6 @@ CREATE TABLE psalm_verses (
     FOREIGN KEY (psalm_id) REFERENCES psalms(id) ON DELETE CASCADE
 );
 
-CREATE TABLE psalm_learning_plans (
-    psalm_id TEXT PRIMARY KEY,
-    status TEXT NOT NULL CHECK (status IN ('not_started', 'learning_sections', 'consolidating', 'learned')),
-    active_passage_id TEXT,
-    started_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    completed_at TEXT,
-    version INTEGER NOT NULL DEFAULT 0 CHECK (version >= 0),
-    FOREIGN KEY (psalm_id) REFERENCES psalms(id) ON DELETE CASCADE
-);
-
 INSERT INTO psalms(id, translation_id, psalm_number, canonical_text, verse_count, completeness)
 SELECT
     translation_id || '-psalm-' || psalm_number,
@@ -157,6 +146,18 @@ DROP TABLE passages;
 ALTER TABLE passages_new RENAME TO passages;
 CREATE INDEX idx_passages_psalm_id ON passages(psalm_id);
 CREATE INDEX idx_passages_psalm_kind ON passages(psalm_id, kind);
+
+CREATE TABLE psalm_learning_plans (
+    psalm_id TEXT PRIMARY KEY,
+    status TEXT NOT NULL CHECK (status IN ('not_started', 'learning_sections', 'consolidating', 'learned')),
+    active_passage_id TEXT,
+    started_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT,
+    version INTEGER NOT NULL DEFAULT 0 CHECK (version >= 0),
+    FOREIGN KEY (psalm_id) REFERENCES psalms(id) ON DELETE CASCADE,
+    FOREIGN KEY (active_passage_id) REFERENCES passages(id) ON DELETE SET NULL
+);
 
 CREATE TABLE review_states_new (
     passage_id TEXT PRIMARY KEY,

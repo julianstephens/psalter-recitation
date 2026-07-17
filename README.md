@@ -62,6 +62,7 @@ Normal workflow notes:
 - `psalter learn 23` resumes the active section for Psalm 23; you do not need to remember a passage ID.
 - When all sections are learned, the Psalm enters whole-Psalm consolidation before it is marked learned.
 - `psalter passage list --psalm 23` and `psalter passage show ...` remain available for inspection.
+- `psalter passage add` is an advanced partial-import tool. Once a Psalm is created that way, upgrading it to a complete Psalm import is not supported yet.
 
 When `psalter learn` reaches recitation, choose `typed` or `spoken`.
 
