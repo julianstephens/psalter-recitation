@@ -12,7 +12,10 @@ from psalter.application.errors import (
     InstallationAlreadyReadyError,
     InstallationIncompleteError,
     InstallationNotReadyError,
+    PsalmDownloadFailedError,
     PsalmPayloadInvalidError,
+    ScriptureProviderUnavailableError,
+    TranslationCatalogUnavailableError,
     TranslationChangeBlockedError,
     TranslationNotSupportedError,
 )
@@ -102,8 +105,7 @@ class PsalmCatalogInstaller:
         repair: bool = False,
     ) -> CatalogInstallationResult:
         now = self._clock.now()
-        translations = self.list_translations()
-        selected = _resolve_translation(translations, translation_id)
+        selected = self._resolve_selected_translation(translation_id)
         current = self._settings.get_settings()
         changing_translation = (
             current is not None
@@ -241,6 +243,26 @@ class PsalmCatalogInstaller:
             imported_psalm_count=imported,
             skipped_psalm_count=skipped,
         )
+
+    def _resolve_selected_translation(self, requested_translation_id: str) -> TranslationInfo:
+        try:
+            translations = self.list_translations()
+            return _resolve_translation(translations, requested_translation_id)
+        except (TranslationCatalogUnavailableError, ScriptureProviderUnavailableError):
+            normalized = requested_translation_id.strip()
+            if not normalized:
+                raise
+            try:
+                probed = self._provider.fetch_psalm(normalized, 1)
+            except (PsalmDownloadFailedError, PsalmPayloadInvalidError):
+                raise
+            canonical_id = probed.translation_id.strip() or normalized
+            return TranslationInfo(
+                id=canonical_id,
+                name=canonical_id,
+                language="unknown",
+                supports_psalms=True,
+            )
 
     def _is_psalm_bundle_valid(self, translation_id: str, psalm_number: int) -> bool:
         psalm = self._psalms.get_by_translation_and_number(translation_id, psalm_number)
