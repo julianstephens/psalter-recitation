@@ -4,39 +4,46 @@ from dataclasses import dataclass
 from typing import Protocol
 from uuid import uuid4
 
-from psalter.application.errors import NotFoundError, NotSupportedError
+from psalter.application.dto import AlignmentIssueDTO, RecitationAssessmentDTO, RecitationSubmission
+from psalter.application.errors import (
+    InvalidLearningTransitionError,
+    LearningSessionNotFoundError,
+    PassageNotFoundError,
+)
+from psalter.application.services.assessment import AssessmentResult, TypedTextAssessmentPolicy
+from psalter.application.services.normalization import (
+    normalize_lines,
+    normalize_text,
+    normalize_tokens,
+)
+from psalter.application.services.scheduling import InitialReviewSchedulingPolicy
+from psalter.domain.errors import InvalidTransitionError
 from psalter.domain.learning import LearningPhase
-from psalter.domain.recitation import RecitationAttempt, RecitationResult
-from psalter.ports.audio_recorder import AudioRecorder
+from psalter.domain.recitation import (
+    AlignmentKind,
+    RecitationAttempt,
+    RecitationResult,
+    RecitationSource,
+)
 from psalter.ports.clock import Clock
 from psalter.ports.learning_repository import LearningRepository
 from psalter.ports.passage_repository import PassageRepository
-from psalter.ports.recitation_repository import RecitationRepository
-from psalter.ports.transcriber import Transcriber
+from psalter.ports.recitation_committer import RecitationCommitter
+from psalter.ports.review_repository import ReviewRepository
 
 
-class TranscriptAssessor(Protocol):
+class RecitationAssessor(Protocol):
     def assess(
-        self, canonical_text: str, normalized_transcript: str
-    ) -> tuple[RecitationResult, float]: ...
-
-
-class UnsupportedAssessmentPolicy:
-    def assess(
-        self, canonical_text: str, normalized_transcript: str
-    ) -> tuple[RecitationResult, float]:
-        raise NotSupportedError(
-            "No transcript assessment policy has been configured. "
-            "Textual assessment is not implemented in this scaffold."
-        )
+        self,
+        expected_tokens: tuple[str, ...],
+        expected_lines: tuple[tuple[str, ...], ...],
+        submitted_tokens: tuple[str, ...],
+    ) -> AssessmentResult: ...
 
 
 @dataclass(frozen=True, slots=True)
-class RecitationAttemptDTO:
-    id: str
-    passage_id: str
-    result: RecitationResult
-    accuracy: float
+class RecitationPolicy:
+    required_passes_to_learn: int = 2
 
 
 class RecitationService:
@@ -44,56 +51,126 @@ class RecitationService:
         self,
         passages: PassageRepository,
         sessions: LearningRepository,
-        attempts: RecitationRepository,
-        recorder: AudioRecorder,
-        transcriber: Transcriber,
-        assessor: TranscriptAssessor,
+        reviews: ReviewRepository,
+        committer: RecitationCommitter,
+        assessor: RecitationAssessor,
+        scheduling_policy: InitialReviewSchedulingPolicy,
+        policy: RecitationPolicy,
         clock: Clock,
     ) -> None:
         self._passages = passages
         self._sessions = sessions
-        self._attempts = attempts
-        self._recorder = recorder
-        self._transcriber = transcriber
+        self._reviews = reviews
+        self._committer = committer
         self._assessor = assessor
+        self._scheduling_policy = scheduling_policy
+        self._policy = policy
         self._clock = clock
 
-    def record_and_assess(self, passage_id: str) -> RecitationAttemptDTO:
-        passage = self._passages.get_by_id(passage_id)
+    def submit_text(self, submission: RecitationSubmission) -> RecitationAssessmentDTO:
+        if submission.source not in (RecitationSource.TYPED, RecitationSource.SPEECH_TRANSCRIPT):
+            raise InvalidLearningTransitionError(
+                f"Unsupported submission source: {submission.source}"
+            )
+
+        passage = self._passages.get_by_id(submission.passage_id)
         if passage is None:
-            raise NotFoundError(f"Passage not found: {passage_id}")
-
-        session = self._sessions.get_latest_by_passage(passage_id)
+            raise PassageNotFoundError(f"Passage not found: {submission.passage_id}")
+        session = self._sessions.get_by_passage(submission.passage_id)
         if session is None:
-            raise NotFoundError(f"Learning session not found for passage: {passage_id}")
+            raise LearningSessionNotFoundError(
+                f"Learning session not found for passage: {submission.passage_id}"
+            )
+        if session.phase is not LearningPhase.READY_FOR_RECITATION:
+            raise InvalidLearningTransitionError(
+                "Recitation submission is only allowed when session is ready_for_recitation"
+            )
 
-        artifact = self._recorder.record(passage_id)
-        transcript = self._transcriber.transcribe(artifact)
-        result, accuracy = self._assessor.assess(
-            canonical_text=passage.canonical_text,
-            normalized_transcript=transcript.normalized_transcript,
-        )
+        expected_tokens = normalize_tokens(passage.canonical_text)
+        expected_lines = normalize_lines(passage.canonical_text)
+        normalized_submission = normalize_text(submission.text)
+        submitted_tokens = tuple(normalized_submission.split()) if normalized_submission else ()
+        assessed = self._assessor.assess(expected_tokens, expected_lines, submitted_tokens)
+        now = self._clock.now()
+
+        updated_session = session
+        review_state = None
+        if assessed.result is RecitationResult.PASS:
+            try:
+                updated_session = session.record_successful_recitation(
+                    required_passes=self._policy.required_passes_to_learn,
+                    when=now,
+                )
+            except InvalidTransitionError as exc:
+                raise InvalidLearningTransitionError(str(exc)) from exc
+            if updated_session.phase is LearningPhase.LEARNED:
+                review_state = self._reviews.get_by_passage(submission.passage_id)
+                if review_state is None:
+                    review_state = self._scheduling_policy.create_initial_state(
+                        passage_id=submission.passage_id,
+                        learned_at=now,
+                    )
+        elif assessed.result is RecitationResult.RETRY:
+            try:
+                updated_session = session.mark_needs_reinforcement(now)
+            except InvalidTransitionError as exc:
+                raise InvalidLearningTransitionError(str(exc)) from exc
 
         attempt = RecitationAttempt(
             id=str(uuid4()),
-            passage_id=passage_id,
-            attempted_at=self._clock.now(),
-            transcript=transcript.transcript,
-            normalized_transcript=transcript.normalized_transcript,
-            result=result,
-            accuracy=accuracy,
+            passage_id=submission.passage_id,
+            learning_session_id=session.id,
+            source=submission.source,
+            submitted_text=submission.text,
+            normalized_text=normalized_submission,
+            attempted_at=now,
+            result=assessed.result,
+            weighted_accuracy=assessed.weighted_accuracy,
+            assessment_policy_version=assessed.policy_version,
+            omission_count=assessed.omission_count,
+            substitution_count=assessed.substitution_count,
+            insertion_count=assessed.insertion_count,
+            longest_omitted_span=assessed.longest_omitted_span,
+            alignment_diagnostics=assessed.alignment,
         )
-        self._attempts.add(attempt)
+        self._committer.commit_assessment(
+            attempt=attempt, session=updated_session, review_state=review_state
+        )
 
-        if session.phase is LearningPhase.READY_FOR_RECITATION:
-            if result is RecitationResult.PASS:
-                self._sessions.upsert(session.mark_learned(self._clock.now()))
-            elif result is RecitationResult.RETRY:
-                self._sessions.upsert(session.mark_needs_reinforcement())
-
-        return RecitationAttemptDTO(
-            id=attempt.id,
+        remaining_successes_required = max(
+            0,
+            self._policy.required_passes_to_learn - updated_session.successful_blank_recitations,
+        )
+        issues = tuple(
+            AlignmentIssueDTO(
+                kind=op.kind,
+                expected_token=op.expected_token,
+                submitted_token=op.submitted_token,
+            )
+            for op in assessed.alignment
+            if op.kind
+            in (AlignmentKind.OMISSION, AlignmentKind.SUBSTITUTION, AlignmentKind.INSERTION)
+        )
+        return RecitationAssessmentDTO(
+            attempt_id=attempt.id,
             passage_id=attempt.passage_id,
+            learning_session_id=attempt.learning_session_id,
+            source=attempt.source,
             result=attempt.result,
-            accuracy=attempt.accuracy,
+            weighted_accuracy=attempt.weighted_accuracy,
+            omission_count=assessed.omission_count,
+            substitution_count=assessed.substitution_count,
+            insertion_count=assessed.insertion_count,
+            longest_omitted_span=assessed.longest_omitted_span,
+            policy_version=assessed.policy_version,
+            failure_reasons=assessed.failure_reasons,
+            omissions=assessed.omissions,
+            substitutions=assessed.substitutions,
+            insertions=assessed.insertions,
+            remaining_successes_required=remaining_successes_required,
+            issues=issues,
         )
+
+
+def default_recitation_assessor() -> RecitationAssessor:
+    return TypedTextAssessmentPolicy()

@@ -1,48 +1,58 @@
 # psalter-recitation
 
-A CLI-first application scaffold for Psalm memorization and review.
+A CLI-first application for Psalm memorization and review.
 
 ## Purpose
 
-This project models and orchestrates a Psalm learning flow:
+This project models and orchestrates a learning flow:
 
-1. Exposure: show the complete passage.
-2. Practice: progress through reduced text prompts.
-3. Proof: record an unaided spoken recitation.
-4. Assessment: transcribe and compare with canonical text.
-5. Scheduling: mark learned only after passing assessment, then schedule reviews.
+1. Exposure: show the complete canonical passage.
+2. Practice: progress through deterministic masking levels.
+3. Typed recitation: submit unaided text (`.done` ends multiline input).
+4. Assessment: normalize and align text with weighted scoring.
+5. Confirmation: require two passing unaided recitations before learned.
+6. Scheduling: create initial review one day after learning.
 
 The CLI and any future UI must share the same application services and domain model.
 
 ## Status
 
-Implemented in this scaffold:
+Implemented:
 
 - Ports-and-adapters structure with inward dependency direction.
 - Typed domain models and state transitions.
-- Application services for learning, recitation orchestration shape, review lookup, and progress.
+- Application services for passage management, learning workflow, typed recitation assessment, review lookup, and progress.
 - SQLite adapter with tracked SQL migrations.
-- Typer commands: init, learn, review, progress.
+- Typer commands: init, passage add/list/show, learn, review, progress.
 - Unit and integration tests.
 
-Deliberately not implemented yet:
+Currently unsupported / intentionally deferred:
 
-- Audio recording provider.
-- Transcription provider.
-- Transcript assessment policy.
-- Full practice interaction algorithm.
-- Full review station scheduling algorithm.
+- Audio recording.
+- Speech recognition transcription.
+- Pronunciation scoring.
+- Semantic paraphrase acceptance.
+- Full seven-station review schedule.
+- Final assessment thresholds (provisional and versioned).
 
 ## Setup
 
 ```bash
 uv sync
 uv run psalter init
+uv run psalter passage add --translation-id esv --psalm 23 --start-verse 1 --end-verse 1 --text "The LORD is my shepherd."
+uv run psalter passage list
+uv run psalter passage show esv-psalm-23-1-1
+uv run psalter learn esv-psalm-23-1-1
 uv run pytest
 uv run ruff check .
 uv run ruff format --check .
 uv run mypy src
 ```
+
+When `psalter learn` reaches recitation, enter multiple lines and terminate input with a line containing only `.done`.
+
+Assessment currently performs textual normalization/alignment only. It does not evaluate pronunciation and does not accept semantic paraphrase substitutions.
 
 ## Project Structure
 

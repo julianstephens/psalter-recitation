@@ -2,22 +2,27 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from psalter.adapters.audio.unsupported import UnsupportedAudioRecorder
 from psalter.adapters.persistence import (
     SqliteDatabase,
     SqliteLearningSessionRepository,
     SqliteMigrator,
     SqlitePassageRepository,
+    SqliteRecitationCommitter,
     SqliteRecitationRepository,
     SqliteReviewRepository,
     migrations_dir,
 )
 from psalter.adapters.system_clock import SystemClock
-from psalter.adapters.transcription.unsupported import UnsupportedTranscriber
 from psalter.application.services.learning import LearningService
+from psalter.application.services.passage import PassageService
 from psalter.application.services.progress import ProgressService
-from psalter.application.services.recitation import RecitationService, UnsupportedAssessmentPolicy
+from psalter.application.services.recitation import (
+    RecitationPolicy,
+    RecitationService,
+    default_recitation_assessor,
+)
 from psalter.application.services.review import ReviewService
+from psalter.application.services.scheduling import InitialReviewSchedulingPolicy
 from psalter.config import AppConfig, build_config
 
 
@@ -26,6 +31,7 @@ class Container:
     config: AppConfig
     db: SqliteDatabase
     migrator: SqliteMigrator
+    passage_service: PassageService
     learning_service: LearningService
     recitation_service: RecitationService
     review_service: ReviewService
@@ -42,21 +48,25 @@ def build_container(config: AppConfig | None = None) -> Container:
     learning_repo = SqliteLearningSessionRepository(db)
     recitation_repo = SqliteRecitationRepository(db)
     review_repo = SqliteReviewRepository(db)
+    recitation_committer = SqliteRecitationCommitter(db)
 
+    passage_service = PassageService(passages=passage_repo)
     learning_service = LearningService(passages=passage_repo, sessions=learning_repo, clock=clock)
     recitation_service = RecitationService(
         passages=passage_repo,
         sessions=learning_repo,
-        attempts=recitation_repo,
-        recorder=UnsupportedAudioRecorder(),
-        transcriber=UnsupportedTranscriber(),
-        assessor=UnsupportedAssessmentPolicy(),
+        reviews=review_repo,
+        committer=recitation_committer,
+        assessor=default_recitation_assessor(),
+        scheduling_policy=InitialReviewSchedulingPolicy(),
+        policy=RecitationPolicy(required_passes_to_learn=2),
         clock=clock,
     )
     review_service = ReviewService(reviews=review_repo, clock=clock)
     progress_service = ProgressService(
         passages=passage_repo,
         sessions=learning_repo,
+        attempts=recitation_repo,
         reviews=review_repo,
         clock=clock,
     )
@@ -65,6 +75,7 @@ def build_container(config: AppConfig | None = None) -> Container:
         config=resolved,
         db=db,
         migrator=migrator,
+        passage_service=passage_service,
         learning_service=learning_service,
         recitation_service=recitation_service,
         review_service=review_service,
