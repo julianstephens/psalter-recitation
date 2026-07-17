@@ -10,6 +10,7 @@ import typer
 
 from psalter.application.dto import (
     PassageDetailDTO,
+    PracticeKind,
     PsalmLearningScreen,
     PsalmLearningScreenDTO,
     PsalmLearningViewDTO,
@@ -50,10 +51,7 @@ def register(app: typer.Typer) -> None:
     def learn_command(
         psalm_number: int,
         translation_id: Annotated[str | None, typer.Option("--translation-id")] = None,
-        data_dir: Annotated[
-            Path | None,
-            typer.Option(help="Override local data directory"),
-        ] = None,
+        data_dir: Annotated[Path | None, typer.Option(help="Override local data directory")] = None,
     ) -> None:
         container = build_container(build_config(data_dir=data_dir))
         container.migrator.apply_pending()
@@ -65,47 +63,31 @@ def register(app: typer.Typer) -> None:
             spoken_recitation_service=container.spoken_recitation_service,
         )
         try:
-            state = workflow.start_or_resume(
-                psalm_number=psalm_number, translation_id=translation_id
-            )
-        except (
-            PsalmNotFoundError,
-            PsalmTranslationAmbiguousError,
-            NoActivePassageError,
-            PsalmLearningPlanConflictError,
-        ) as exc:
+            state = workflow.start_or_resume(psalm_number=psalm_number, translation_id=translation_id)
+        except (PsalmNotFoundError, PsalmTranslationAmbiguousError, NoActivePassageError, PsalmLearningPlanConflictError) as exc:
             typer.secho(str(exc), fg=typer.colors.RED, err=True)
             raise typer.Exit(code=1) from exc
 
         while True:
             if _render_completed_states(state):
                 return
-
             active = state.view.active_passage
             if active is None:
                 typer.secho("No active passage is available.", fg=typer.colors.RED, err=True)
                 raise typer.Exit(code=1)
-
             _print_header(state.view, active)
+
             if state.screen is PsalmLearningScreen.EXPOSURE:
                 typer.echo("")
                 typer.echo(active.canonical_text)
-                prompt = (
-                    "Read the complete Psalm, then continue to recitation?"
-                    if active.kind is PassageKind.CONSOLIDATION
-                    else "Read attentively, then continue to practice?"
-                )
+                prompt = "Read the complete Psalm, then continue to recitation?" if active.kind is PassageKind.CONSOLIDATION else "Read attentively, then continue to practice?"
                 if not typer.confirm("\n\n" + prompt, default=True):
                     return
-                try:
-                    state = workflow.complete_exposure(
-                        psalm_number=psalm_number,
-                        translation_id=translation_id,
-                        target_token=state.active_target.token if state.active_target else None,
-                    )
-                except InvalidLearningTransitionError as exc:
-                    typer.secho(str(exc), fg=typer.colors.RED, err=True)
-                    raise typer.Exit(code=1) from exc
+                state = workflow.complete_exposure(
+                    psalm_number=psalm_number,
+                    translation_id=translation_id,
+                    target_token=state.active_target.token if state.active_target else None,
+                )
                 continue
 
             if state.screen is PsalmLearningScreen.PRACTICE:
@@ -114,30 +96,42 @@ def register(app: typer.Typer) -> None:
                     typer.secho("Practice view was not available.", fg=typer.colors.RED, err=True)
                     raise typer.Exit(code=1)
                 typer.echo("")
-                typer.echo(practice.masked_text)
-                if not typer.confirm(
-                    f"Complete practice level {practice.level}?",
-                    default=True,
-                ):
-                    return
-                try:
-                    state = workflow.complete_practice(
-                        psalm_number=psalm_number,
-                        translation_id=translation_id,
-                        target_token=state.active_target.token if state.active_target else None,
+                if practice.kind is PracticeKind.SHADOW_TYPING:
+                    typer.echo("Shadow typing")
+                    typer.echo("Copy the passage while looking at it. End with a line containing only .done.")
+                    typer.echo("")
+                    typer.echo(practice.canonical_text or active.canonical_text)
+                    typer.echo("")
+                    typer.echo("Your copy:")
+                    result = container.learning_service.submit_shadow_typing(
+                        active.id,
+                        _read_multiline_submission(),
                     )
-                except InvalidLearningTransitionError as exc:
-                    typer.secho(str(exc), fg=typer.colors.RED, err=True)
-                    raise typer.Exit(code=1) from exc
+                    if result.accepted:
+                        typer.echo("Shadow typing complete. Beginning masked recall.")
+                        state = workflow.start_or_resume(psalm_number=psalm_number, translation_id=translation_id)
+                    else:
+                        typer.secho("Your copy does not yet match the passage.", fg=typer.colors.YELLOW)
+                        if result.mismatch_excerpt:
+                            typer.echo(f'Check near: "{result.mismatch_excerpt}"')
+                        if not typer.confirm("Try again?", default=True):
+                            return
+                    continue
+                typer.echo(practice.masked_text or "")
+                if not typer.confirm(f"Complete practice level {practice.level}?", default=True):
+                    return
+                state = workflow.complete_practice(
+                    psalm_number=psalm_number,
+                    translation_id=translation_id,
+                    target_token=state.active_target.token if state.active_target else None,
+                )
                 continue
 
             if state.screen is PsalmLearningScreen.READY_FOR_RECITATION:
                 state = _run_recitation(workflow, state, psalm_number, translation_id)
                 assessment = state.assessment
                 if assessment is None:
-                    typer.secho(
-                        "Recitation assessment was not available.", fg=typer.colors.RED, err=True
-                    )
+                    typer.secho("Recitation assessment was not available.", fg=typer.colors.RED, err=True)
                     raise typer.Exit(code=1)
                 _print_assessment(assessment)
                 if state.screen is PsalmLearningScreen.PSALM_COMPLETED:
@@ -149,17 +143,11 @@ def register(app: typer.Typer) -> None:
                     return
                 if state.screen is PsalmLearningScreen.CONSOLIDATION_STARTED:
                     typer.echo("All sections learned. Entering whole-Psalm consolidation.")
-                    state = workflow.start_or_resume(
-                        psalm_number=psalm_number,
-                        translation_id=translation_id,
-                    )
+                    state = workflow.start_or_resume(psalm_number=psalm_number, translation_id=translation_id)
                     continue
                 if state.screen is PsalmLearningScreen.SECTION_COMPLETED:
                     typer.echo("Section learned.")
-                    state = workflow.start_or_resume(
-                        psalm_number=psalm_number,
-                        translation_id=translation_id,
-                    )
+                    state = workflow.start_or_resume(psalm_number=psalm_number, translation_id=translation_id)
                     if state.view.active_passage is not None:
                         typer.echo(f"Advancing to {_section_label(state.view.active_passage)}.")
                     continue
@@ -167,25 +155,13 @@ def register(app: typer.Typer) -> None:
                     typer.echo("Successful recitation recorded. One more pass required.")
                     continue
                 if state.screen is PsalmLearningScreen.REINFORCEMENT:
-                    state = _handle_reinforcement(
-                        workflow,
-                        state,
-                        psalm_number,
-                        translation_id,
-                        active,
-                    )
+                    state = _handle_reinforcement(workflow, state, psalm_number, translation_id, active)
                     continue
                 typer.echo("Manual review required.")
                 return
 
             if state.screen is PsalmLearningScreen.REINFORCEMENT:
-                state = _handle_reinforcement(
-                    workflow,
-                    state,
-                    psalm_number,
-                    translation_id,
-                    active,
-                )
+                state = _handle_reinforcement(workflow, state, psalm_number, translation_id, active)
                 continue
             typer.echo("Manual review required.")
             return
@@ -218,41 +194,26 @@ def _print_header(view: PsalmLearningViewDTO, passage: PassageDetailDTO) -> None
         typer.echo("Whole-Psalm consolidation unavailable: partial import.")
 
 
-def _run_recitation(
-    workflow: PsalmLearningWorkflow,
-    state: PsalmLearningScreenDTO,
-    psalm_number: int,
-    translation_id: str | None,
-) -> PsalmLearningScreenDTO:
+def _run_recitation(workflow: PsalmLearningWorkflow, state: PsalmLearningScreenDTO, psalm_number: int, translation_id: str | None) -> PsalmLearningScreenDTO:
     passage = state.view.active_passage
     if passage is None:
         typer.secho("No active passage is available.", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1)
-    typer.echo("")
     method = typer.prompt("Recitation method [typed/spoken]", default="typed").strip().casefold()
     if method not in {"typed", "spoken"}:
-        typer.secho(
-            "Invalid recitation method. Choose either typed or spoken.",
-            fg=typer.colors.RED,
-            err=True,
-        )
         raise typer.Exit(code=1)
     try:
         if method == "typed":
             typer.echo("Type your recitation. End with a line containing only .done")
-            text = _read_multiline_submission()
             return workflow.submit_typed_recitation(
                 psalm_number=psalm_number,
                 translation_id=translation_id,
-                text=text,
+                text=_read_multiline_submission(),
                 target_token=state.active_target.token if state.active_target else None,
             )
-
-        typer.echo("Spoken recitation selected.")
         typer.echo("Press Enter to begin recording.")
         _await_enter()
-        typer.echo("Recording...")
-        typer.echo("Press Enter to stop.")
+        typer.echo("Recording... Press Enter to stop.")
         return workflow.submit_recorded_recitation(
             psalm_number=psalm_number,
             translation_id=translation_id,
@@ -260,32 +221,13 @@ def _run_recitation(
             wait_for_stop=_wait_for_enter_with_timeout,
             before_transcribe=_print_transcribing,
         )
-    except (
-        PersistenceConflictError,
-        AudioRecorderNotConfiguredError,
-        AudioRecordingFailedError,
-        AudioArtifactInvalidError,
-        InvalidLearningTransitionError,
-        LearningSessionNotFoundError,
-        PassageNotFoundError,
-        TranscriberNotConfiguredError,
-        WhisperExecutableNotFoundError,
-        WhisperModelNotFoundError,
-        WhisperProcessFailedError,
-        TranscriptOutputMissingError,
-        TranscriptEmptyError,
-        ArtifactCleanupFailedError,
-        UnsupportedAudioPlatformError,
-        StaleLearningTargetError,
-    ) as exc:
+    except (PersistenceConflictError, AudioRecorderNotConfiguredError, AudioRecordingFailedError, AudioArtifactInvalidError, InvalidLearningTransitionError, LearningSessionNotFoundError, PassageNotFoundError, TranscriberNotConfiguredError, WhisperExecutableNotFoundError, WhisperModelNotFoundError, WhisperProcessFailedError, TranscriptOutputMissingError, TranscriptEmptyError, ArtifactCleanupFailedError, UnsupportedAudioPlatformError, StaleLearningTargetError) as exc:
         typer.secho(str(exc), fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1) from exc
 
 
 def _section_label(passage: PassageDetailDTO) -> str:
-    if passage.start_verse == passage.end_verse:
-        return f"verse {passage.start_verse}"
-    return f"verses {passage.start_verse}-{passage.end_verse}"
+    return f"verse {passage.start_verse}" if passage.start_verse == passage.end_verse else f"verses {passage.start_verse}-{passage.end_verse}"
 
 
 def _read_multiline_submission() -> str:
@@ -313,7 +255,6 @@ def _wait_for_enter_with_timeout(timeout: float | None) -> bool:
 
 def _wait_for_enter_windows(timeout: float) -> bool:
     import msvcrt
-
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if msvcrt.kbhit():
@@ -328,9 +269,7 @@ def _wait_for_enter_windows(timeout: float) -> bool:
 
 def _wait_for_enter_posix(timeout: float) -> bool:
     ready, _, _ = select.select([sys.stdin], [], [], timeout)
-    if not ready:
-        return False
-    return sys.stdin.readline() != ""
+    return bool(ready and sys.stdin.readline() != "")
 
 
 def _print_transcribing() -> None:
@@ -344,39 +283,12 @@ def _print_assessment(assessment: RecitationAssessmentDTO) -> None:
     typer.echo(f"Substitutions: {assessment.substitution_count}")
     typer.echo(f"Insertions: {assessment.insertion_count}")
     typer.echo(f"Longest omitted span: {assessment.longest_omitted_span}")
-    typer.echo(
-        f"Remaining successful recitations required: {assessment.remaining_successes_required}"
-    )
-    if assessment.result is not RecitationResult.RETRY:
-        return
-    issues_to_show = 5
-    if assessment.omissions:
-        typer.echo("Omitted:")
-        for item in assessment.omissions[:issues_to_show]:
-            typer.echo(f'- "{item}"')
-    if assessment.substitutions:
-        typer.echo("Substitutions:")
-        for expected, received in assessment.substitutions[:issues_to_show]:
-            typer.echo(f'- expected "{expected}", received "{received}"')
+    typer.echo(f"Remaining successful recitations required: {assessment.remaining_successes_required}")
 
 
-def _handle_reinforcement(
-    workflow: PsalmLearningWorkflow,
-    state: PsalmLearningScreenDTO,
-    psalm_number: int,
-    translation_id: str | None,
-    passage: PassageDetailDTO,
-) -> PsalmLearningScreenDTO:
-    selection = (
-        typer.prompt(
-            "Choose reinforcement action: view, resume, exit",
-            default="resume",
-        )
-        .strip()
-        .casefold()
-    )
+def _handle_reinforcement(workflow: PsalmLearningWorkflow, state: PsalmLearningScreenDTO, psalm_number: int, translation_id: str | None, passage: PassageDetailDTO) -> PsalmLearningScreenDTO:
+    selection = typer.prompt("Choose reinforcement action: view, resume, exit", default="resume").strip().casefold()
     if selection == "view":
-        typer.echo("")
         typer.echo(passage.canonical_text)
         return state
     if selection == "resume":
