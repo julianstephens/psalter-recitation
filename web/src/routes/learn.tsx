@@ -1,4 +1,4 @@
-import { Box, Button, Heading, HStack, Stack, Text, Textarea } from '@chakra-ui/react'
+import { Box, Button, Grid, Heading, HStack, Stack, Text, Textarea } from '@chakra-ui/react'
 import {
   Form,
   redirect,
@@ -13,6 +13,7 @@ import {
   completeExposure,
   completePractice,
   getLearningState,
+  request,
   resumeReinforcement,
   startLearning,
   submitAudioRecitation,
@@ -25,33 +26,52 @@ type LearnActionData = {
   screen?: LearningScreen
 }
 
+type ShadowPractice = {
+  kind: 'shadow_typing' | 'masked_recall'
+  canonical_text: string | null
+  masked_text: string | null
+  level: number
+  max_level: number
+  mismatch_excerpt: string | null
+}
+
 export async function learnLoader({ params }: { params: { psalmNumber?: string } }) {
   return getLearningState(Number(params.psalmNumber))
 }
 
 export async function learnAction({
   params,
-  request,
+  request: routeRequest,
 }: {
   params: { psalmNumber?: string }
   request: Request
 }): Promise<LearnActionData | Response> {
   const psalmNumber = Number(params.psalmNumber)
-  const formData = await request.formData()
+  const formData = await routeRequest.formData()
   const intent = String(formData.get('intent') ?? '')
   const targetToken = String(formData.get('target_token') ?? '') || undefined
   const text = String(formData.get('text') ?? '')
   const audio = formData.get('audio')
 
   try {
-    if (intent === 'start') {
-      return { screen: await startLearning(psalmNumber) }
-    }
+    if (intent === 'start') return { screen: await startLearning(psalmNumber) }
     if (intent === 'complete-exposure') {
       return { screen: await completeExposure(psalmNumber, { target_token: targetToken }) }
     }
     if (intent === 'complete-practice') {
       return { screen: await completePractice(psalmNumber, { target_token: targetToken }) }
+    }
+    if (intent === 'submit-shadow-typing') {
+      return {
+        screen: await request<LearningScreen>(
+          `/api/v1/psalms/${psalmNumber}/learning/practice/shadow-typing`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ target_token: targetToken, text }),
+          },
+        ),
+      }
     }
     if (intent === 'resume-reinforcement') {
       return { screen: await resumeReinforcement(psalmNumber, { target_token: targetToken }) }
@@ -67,17 +87,11 @@ export async function learnAction({
     if (intent === 'submit-audio' && audio instanceof File) {
       const payload = new FormData()
       payload.set('audio', audio)
-      if (targetToken) {
-        payload.set('target_token', targetToken)
-      }
-      return {
-        screen: await submitAudioRecitation(psalmNumber, payload),
-      }
+      if (targetToken) payload.set('target_token', targetToken)
+      return { screen: await submitAudioRecitation(psalmNumber, payload) }
     }
   } catch (error) {
-    if (error instanceof ApiError) {
-      return { error: error.message }
-    }
+    if (error instanceof ApiError) return { error: error.message }
     throw error
   }
 
@@ -95,14 +109,13 @@ export function LearnPage() {
   const activePassage = screen.active_passage
   const assessment = screen.assessment
   const isSubmitting = navigation.state === 'submitting'
+  const practice = screen.practice as ShadowPractice | null
 
   return (
     <Stack gap="6">
       <Stack gap="2">
         <Heading size="lg">Learn Psalm {psalmNumber}</Heading>
-        <Text color="fg.muted">
-          This route is driven by the shared learning workflow behind the CLI and API.
-        </Text>
+        <Text color="fg.muted">Work through exposure, copywork, recall, and recitation.</Text>
       </Stack>
 
       {actionData?.error ? (
@@ -115,43 +128,56 @@ export function LearnPage() {
         <Stack gap="4">
           <Text fontWeight="semibold">Screen: {screen.screen.replaceAll('_', ' ')}</Text>
           {activeTarget ? <Text color="fg.muted">Current target: {activeTarget.label}</Text> : null}
-          {activePassage ? (
-            <Text color="fg.muted">
-              Passage: verses {activePassage.start_verse}-{activePassage.end_verse}
-            </Text>
-          ) : null}
 
           {screen.screen === 'exposure' && activePassage ? (
             <Stack gap="4">
               <Text whiteSpace="pre-wrap">{activePassage.canonical_text}</Text>
               <Form method="post">
                 <input name="target_token" type="hidden" value={activeTarget?.token ?? ''} />
-                <Button
-                  colorPalette="purple"
-                  loading={isSubmitting}
-                  name="intent"
-                  type="submit"
-                  value="complete-exposure"
-                >
+                <Button colorPalette="purple" loading={isSubmitting} name="intent" type="submit" value="complete-exposure">
                   Continue
                 </Button>
               </Form>
             </Stack>
           ) : null}
 
-          {screen.screen === 'practice' && screen.practice ? (
+          {screen.screen === 'practice' && practice?.kind === 'shadow_typing' ? (
+            <Form method="post">
+              <Stack gap="4">
+                <Stack gap="1">
+                  <Heading size="md">Shadow typing</Heading>
+                  <Text color="fg.muted">Copy the passage while looking at it. This is copywork, not a memory test.</Text>
+                </Stack>
+                {practice.mismatch_excerpt ? (
+                  <Box rounded="md" borderWidth="1px" borderColor="orange.300" bg="orange.50" p="3">
+                    <Text color="orange.800">Check near: “{practice.mismatch_excerpt}”</Text>
+                  </Box>
+                ) : null}
+                <Grid gap="4" templateColumns={{ base: '1fr', lg: '1fr 1fr' }}>
+                  <Box rounded="lg" borderWidth="1px" p="4">
+                    <Text mb="2" fontWeight="semibold">Canonical text</Text>
+                    <Text whiteSpace="pre-wrap">{practice.canonical_text}</Text>
+                  </Box>
+                  <Stack gap="2">
+                    <Text fontWeight="semibold">Your copy</Text>
+                    <Textarea minH="320px" name="text" placeholder="Type the passage exactly as shown" resize="vertical" required />
+                  </Stack>
+                </Grid>
+                <input name="target_token" type="hidden" value={activeTarget?.token ?? ''} />
+                <Button colorPalette="purple" loading={isSubmitting} name="intent" type="submit" value="submit-shadow-typing">
+                  Check copywork
+                </Button>
+              </Stack>
+            </Form>
+          ) : null}
+
+          {screen.screen === 'practice' && practice?.kind === 'masked_recall' ? (
             <Stack gap="4">
-              <Text color="fg.muted">Practice level {screen.practice.level}</Text>
-              <Text whiteSpace="pre-wrap">{screen.practice.masked_text}</Text>
+              <Text color="fg.muted">Practice level {practice.level}</Text>
+              <Text whiteSpace="pre-wrap">{practice.masked_text}</Text>
               <Form method="post">
                 <input name="target_token" type="hidden" value={activeTarget?.token ?? ''} />
-                <Button
-                  colorPalette="purple"
-                  loading={isSubmitting}
-                  name="intent"
-                  type="submit"
-                  value="complete-practice"
-                >
+                <Button colorPalette="purple" loading={isSubmitting} name="intent" type="submit" value="complete-practice">
                   Complete practice level
                 </Button>
               </Form>
@@ -162,19 +188,8 @@ export function LearnPage() {
             <Form method="post">
               <Stack gap="4">
                 <input name="target_token" type="hidden" value={activeTarget?.token ?? ''} />
-                <Textarea
-                  minH="220px"
-                  name="text"
-                  placeholder="Type your recitation here"
-                  resize="vertical"
-                />
-                <Button
-                  colorPalette="purple"
-                  loading={isSubmitting}
-                  name="intent"
-                  type="submit"
-                  value="submit-text"
-                >
+                <Textarea minH="220px" name="text" placeholder="Type your recitation here" resize="vertical" />
+                <Button colorPalette="purple" loading={isSubmitting} name="intent" type="submit" value="submit-text">
                   Submit typed recitation
                 </Button>
               </Stack>
@@ -187,13 +202,7 @@ export function LearnPage() {
                 <input name="target_token" type="hidden" value={activeTarget?.token ?? ''} />
                 <Text color="fg.muted">Or upload recorded audio for spoken assessment.</Text>
                 <input accept="audio/*" name="audio" type="file" />
-                <Button
-                  loading={isSubmitting}
-                  name="intent"
-                  type="submit"
-                  value="submit-audio"
-                  variant="outline"
-                >
+                <Button loading={isSubmitting} name="intent" type="submit" value="submit-audio" variant="outline">
                   Submit spoken recitation
                 </Button>
               </Stack>
@@ -205,13 +214,7 @@ export function LearnPage() {
               <Text whiteSpace="pre-wrap">{activePassage.canonical_text}</Text>
               <Form method="post">
                 <input name="target_token" type="hidden" value={activeTarget?.token ?? ''} />
-                <Button
-                  colorPalette="purple"
-                  loading={isSubmitting}
-                  name="intent"
-                  type="submit"
-                  value="resume-reinforcement"
-                >
+                <Button colorPalette="purple" loading={isSubmitting} name="intent" type="submit" value="resume-reinforcement">
                   Resume practice
                 </Button>
               </Form>
@@ -233,13 +236,7 @@ export function LearnPage() {
 
           {['section_completed', 'consolidation_started'].includes(screen.screen) ? (
             <Form method="post">
-              <Button
-                colorPalette="purple"
-                loading={isSubmitting}
-                name="intent"
-                type="submit"
-                value="start"
-              >
+              <Button colorPalette="purple" loading={isSubmitting} name="intent" type="submit" value="start">
                 Continue learning
               </Button>
             </Form>
