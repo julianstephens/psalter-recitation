@@ -86,12 +86,26 @@ class LearningViewDTO:
     session: LearningSessionDTO
 
 
+class PracticeKind(StrEnum):
+    SHADOW_TYPING = "shadow_typing"
+    MASKED_RECALL = "masked_recall"
+
+
 @dataclass(frozen=True, slots=True)
 class PracticeViewDTO:
     session: LearningSessionDTO
-    masked_text: str
+    kind: PracticeKind
     level: int
     max_level: int
+    canonical_text: str | None = None
+    masked_text: str | None = None
+    mismatch_excerpt: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowTypingResultDTO:
+    accepted: bool
+    mismatch_excerpt: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
