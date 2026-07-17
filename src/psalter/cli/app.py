@@ -7,12 +7,14 @@ from psalter.cli.commands import (
     register_learn,
     register_passage,
     register_progress,
+    register_psalm,
     register_review,
 )
 
 app = typer.Typer(help="CLI for Psalm memorization workflow scaffolding")
 
 register_init(app)
+register_psalm(app)
 register_passage(app)
 register_learn(app)
 register_review(app)

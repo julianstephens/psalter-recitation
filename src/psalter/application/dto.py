@@ -6,6 +6,8 @@ from datetime import datetime
 from pathlib import Path
 
 from psalter.domain.learning import LearningPhase
+from psalter.domain.passage import PassageKind
+from psalter.domain.psalm import PsalmCompleteness, PsalmLearningStatus
 from psalter.domain.recitation import AlignmentKind, RecitationResult, RecitationSource
 
 
@@ -48,20 +50,27 @@ class LearningSessionDTO:
 @dataclass(frozen=True, slots=True)
 class PassageSummaryDTO:
     id: str
+    psalm_id: str
     translation_id: str
     psalm_number: int
     start_verse: int
     end_verse: int
+    sequence_number: int
+    kind: PassageKind
 
 
 @dataclass(frozen=True, slots=True)
 class PassageDetailDTO:
     id: str
+    psalm_id: str
     translation_id: str
     psalm_number: int
     start_verse: int
     end_verse: int
     canonical_text: str
+    sequence_number: int
+    kind: PassageKind
+    segmentation_policy_version: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,3 +141,74 @@ class RecitationSubmission:
     passage_id: str
     source: RecitationSource
     text: str
+
+
+@dataclass(frozen=True, slots=True)
+class PsalmVerseDTO:
+    verse_number: int
+    canonical_text: str
+
+
+@dataclass(frozen=True, slots=True)
+class PsalmSummaryDTO:
+    id: str
+    translation_id: str
+    psalm_number: int
+    verse_count: int
+    completeness: PsalmCompleteness
+
+
+@dataclass(frozen=True, slots=True)
+class PsalmDetailDTO:
+    id: str
+    translation_id: str
+    psalm_number: int
+    canonical_text: str
+    verse_count: int
+    completeness: PsalmCompleteness
+    verses: tuple[PsalmVerseDTO, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class PsalmLearningPlanDTO:
+    psalm_id: str
+    status: PsalmLearningStatus
+    active_passage_id: str | None
+    started_at: datetime
+    updated_at: datetime
+    completed_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class PsalmLearningViewDTO:
+    psalm: PsalmDetailDTO
+    plan: PsalmLearningPlanDTO
+    active_passage: PassageDetailDTO | None
+    section_index: int | None
+    section_count: int
+    sections_learned: int
+    consolidation_available: bool
+
+
+@dataclass(frozen=True, slots=True)
+class PsalmProgressDTO:
+    psalm_id: str
+    translation_id: str
+    psalm_number: int
+    status: PsalmLearningStatus
+    section_count: int
+    sections_learned: int
+    current_section_label: str | None
+    reviews_due: int
+    consolidation_available: bool
+
+
+@dataclass(frozen=True, slots=True)
+class PsalmReviewItemDTO:
+    psalm_id: str
+    translation_id: str
+    psalm_number: int
+    reason: str
+    due_label: str
+    next_review_at: datetime | None
+    passage_id: str

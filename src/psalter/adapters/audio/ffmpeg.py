@@ -143,7 +143,7 @@ class FfmpegAudioRecorder:
         try:
             process.stdin.write("q\n")
             process.stdin.flush()
-        except (BrokenPipeError, OSError, ValueError):
+        except BrokenPipeError, OSError, ValueError:
             return
 
     def _terminate_process(self, process: subprocess.Popen[str]) -> None:

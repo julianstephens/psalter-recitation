@@ -57,9 +57,18 @@ class LearningService:
         return _to_dto(session)
 
     def complete_exposure(self, passage_id: str) -> LearningSessionDTO:
+        return self._complete_exposure(passage_id, skip_practice=False)
+
+    def complete_exposure_and_mark_ready(self, passage_id: str) -> LearningSessionDTO:
+        return self._complete_exposure(passage_id, skip_practice=True)
+
+    def _complete_exposure(self, passage_id: str, *, skip_practice: bool) -> LearningSessionDTO:
         session = self._require_session(passage_id)
         try:
-            updated = session.complete_exposure(self._clock.now())
+            updated = session.complete_exposure(
+                self._clock.now(),
+                skip_practice=skip_practice,
+            )
         except InvalidTransitionError as exc:
             raise InvalidLearningTransitionError(str(exc)) from exc
         self._sessions.upsert(updated)
@@ -97,21 +106,28 @@ class LearningService:
             raise PassageNotFoundError(f"Passage not found: {passage_id}")
         return PassageDetailDTO(
             id=passage.id,
+            psalm_id=passage.psalm_id,
             translation_id=passage.translation_id,
             psalm_number=passage.psalm_number,
             start_verse=passage.start_verse,
             end_verse=passage.end_verse,
             canonical_text=passage.canonical_text,
+            sequence_number=passage.sequence_number,
+            kind=passage.kind,
+            segmentation_policy_version=passage.segmentation_policy_version,
         )
 
     def get_passage_summaries(self) -> list[PassageSummaryDTO]:
         return [
             PassageSummaryDTO(
                 id=item.id,
+                psalm_id=item.psalm_id,
                 translation_id=item.translation_id,
                 psalm_number=item.psalm_number,
                 start_verse=item.start_verse,
                 end_verse=item.end_verse,
+                sequence_number=item.sequence_number,
+                kind=item.kind,
             )
             for item in self._passages.list_all()
         ]

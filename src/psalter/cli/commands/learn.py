@@ -8,7 +8,12 @@ from typing import Annotated
 
 import typer
 
-from psalter.application.dto import RecitationAssessmentDTO, RecitationSubmission
+from psalter.application.dto import (
+    PassageDetailDTO,
+    PsalmLearningViewDTO,
+    RecitationAssessmentDTO,
+    RecitationSubmission,
+)
 from psalter.application.errors import (
     ArtifactCleanupFailedError,
     AudioArtifactInvalidError,
@@ -16,8 +21,12 @@ from psalter.application.errors import (
     AudioRecordingFailedError,
     InvalidLearningTransitionError,
     LearningSessionNotFoundError,
+    NoActivePassageError,
     PassageNotFoundError,
     PersistenceConflictError,
+    PsalmLearningPlanConflictError,
+    PsalmNotFoundError,
+    PsalmTranslationAmbiguousError,
     TranscriberNotConfiguredError,
     TranscriptEmptyError,
     TranscriptOutputMissingError,
@@ -29,13 +38,16 @@ from psalter.application.errors import (
 from psalter.bootstrap import Container, build_container
 from psalter.config import build_config
 from psalter.domain.learning import LearningPhase
+from psalter.domain.passage import PassageKind
+from psalter.domain.psalm import PsalmLearningStatus
 from psalter.domain.recitation import RecitationResult, RecitationSource
 
 
 def register(app: typer.Typer) -> None:
     @app.command("learn")
     def learn_command(
-        passage_id: str,
+        psalm_number: int,
+        translation_id: Annotated[str | None, typer.Option("--translation-id")] = None,
         data_dir: Annotated[
             Path | None,
             typer.Option(help="Override local data directory"),
@@ -44,41 +56,68 @@ def register(app: typer.Typer) -> None:
         container = build_container(build_config(data_dir=data_dir))
         container.migrator.apply_pending()
         try:
-            container.learning_service.begin_or_resume(passage_id)
-        except PassageNotFoundError as exc:
+            container.psalm_learning_service.begin_or_resume(
+                psalm_number=psalm_number,
+                translation_id=translation_id,
+            )
+        except (
+            PsalmNotFoundError,
+            PsalmTranslationAmbiguousError,
+            NoActivePassageError,
+            PsalmLearningPlanConflictError,
+        ) as exc:
             typer.secho(str(exc), fg=typer.colors.RED, err=True)
             raise typer.Exit(code=1) from exc
 
         while True:
             try:
-                view = container.learning_service.get_learning_view(passage_id)
-            except (PassageNotFoundError, LearningSessionNotFoundError) as exc:
+                view = container.psalm_learning_service.get_learning_view(
+                    psalm_number=psalm_number,
+                    translation_id=translation_id,
+                )
+            except (
+                PsalmNotFoundError,
+                PsalmTranslationAmbiguousError,
+                NoActivePassageError,
+            ) as exc:
                 typer.secho(str(exc), fg=typer.colors.RED, err=True)
                 raise typer.Exit(code=1) from exc
 
-            session = view.session
-            passage = view.passage
-            typer.echo("")
-            typer.echo(
-                f"{passage.translation_id} Psalm {passage.psalm_number}:"
-                f"{passage.start_verse}-{passage.end_verse}"
-            )
-            typer.echo(f"Phase: {session.phase.value}")
+            if _render_completed_states(view):
+                return
 
+            active = view.active_passage
+            if active is None:
+                typer.secho("No active passage is available.", fg=typer.colors.RED, err=True)
+                raise typer.Exit(code=1)
+            session = container.learning_service.get_current_session(active.id)
+            if session is None:
+                typer.secho("Learning session was not initialized.", fg=typer.colors.RED, err=True)
+                raise typer.Exit(code=1)
+
+            _print_header(view, active)
             if session.phase is LearningPhase.EXPOSURE:
                 typer.echo("")
-                typer.echo(passage.canonical_text)
-                if not typer.confirm("Read attentively, then continue to practice?", default=True):
+                typer.echo(active.canonical_text)
+                prompt = (
+                    "Read the complete Psalm, then continue to recitation?"
+                    if active.kind is PassageKind.CONSOLIDATION
+                    else "Read attentively, then continue to practice?"
+                )
+                if not typer.confirm(prompt, default=True):
                     return
                 try:
-                    container.learning_service.complete_exposure(passage_id)
+                    if active.kind is PassageKind.CONSOLIDATION:
+                        container.learning_service.complete_exposure_and_mark_ready(active.id)
+                    else:
+                        container.learning_service.complete_exposure(active.id)
                 except InvalidLearningTransitionError as exc:
                     typer.secho(str(exc), fg=typer.colors.RED, err=True)
                     raise typer.Exit(code=1) from exc
                 continue
 
             if session.phase is LearningPhase.PRACTICE:
-                practice = container.learning_service.get_practice_view(passage_id)
+                practice = container.learning_service.get_practice_view(active.id)
                 typer.echo("")
                 typer.echo(practice.masked_text)
                 if not typer.confirm(
@@ -87,90 +126,156 @@ def register(app: typer.Typer) -> None:
                 ):
                     return
                 try:
-                    container.learning_service.complete_practice_level(passage_id)
+                    container.learning_service.complete_practice_level(active.id)
                 except InvalidLearningTransitionError as exc:
                     typer.secho(str(exc), fg=typer.colors.RED, err=True)
                     raise typer.Exit(code=1) from exc
                 continue
 
             if session.phase is LearningPhase.READY_FOR_RECITATION:
-                typer.echo("")
-                method = (
-                    typer.prompt("Recitation method [typed/spoken]", default="typed")
-                    .strip()
-                    .casefold()
-                )
-                if method not in {"typed", "spoken"}:
-                    typer.secho(
-                        "Invalid recitation method. Choose either typed or spoken.",
-                        fg=typer.colors.RED,
-                        err=True,
-                    )
-                    raise typer.Exit(code=1)
-                try:
-                    if method == "typed":
-                        typer.echo("Type your recitation. End with a line containing only .done")
-                        text = _read_multiline_submission()
-                        assessment = container.recitation_service.submit_text(
-                            RecitationSubmission(
-                                passage_id=passage_id,
-                                source=RecitationSource.TYPED,
-                                text=text,
-                            )
-                        )
-                    else:
-                        typer.echo("Spoken recitation selected.")
-                        typer.echo("Press Enter to begin recording.")
-                        _await_enter()
-                        typer.echo("Recording...")
-                        typer.echo("Press Enter to stop.")
-
-                        assessment = (
-                            container.spoken_recitation_service.record_transcribe_and_submit(
-                                passage_id,
-                                wait_for_stop=_wait_for_enter_with_timeout,
-                                before_transcribe=_print_transcribing,
-                            )
-                        )
-                except (
-                    PersistenceConflictError,
-                    AudioRecorderNotConfiguredError,
-                    AudioRecordingFailedError,
-                    AudioArtifactInvalidError,
-                    TranscriberNotConfiguredError,
-                    WhisperExecutableNotFoundError,
-                    WhisperModelNotFoundError,
-                    WhisperProcessFailedError,
-                    TranscriptOutputMissingError,
-                    TranscriptEmptyError,
-                    ArtifactCleanupFailedError,
-                    UnsupportedAudioPlatformError,
-                ) as exc:
-                    typer.secho(str(exc), fg=typer.colors.RED, err=True)
-                    raise typer.Exit(code=1) from exc
+                assessment = _run_recitation(container, active)
                 _print_assessment(assessment)
                 if (
                     assessment.result is RecitationResult.PASS
                     and assessment.remaining_successes_required == 0
                 ):
-                    typer.echo("Passage learned. Initial review scheduled for one day from now.")
-                    return
+                    try:
+                        updated_view = (
+                            container.psalm_learning_service.advance_after_passage_learned(
+                                view.psalm.id
+                            )
+                        )
+                    except (
+                        NoActivePassageError,
+                        PsalmLearningPlanConflictError,
+                    ) as exc:
+                        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+                        raise typer.Exit(code=1) from exc
+                    if active.kind is PassageKind.CONSOLIDATION:
+                        typer.echo("Whole Psalm learned. Use `psalter review` for due reviews.")
+                        if updated_view.plan.status is PsalmLearningStatus.LEARNED:
+                            return
+                    else:
+                        typer.echo("Section learned.")
+                        if (
+                            updated_view.plan.status is PsalmLearningStatus.CONSOLIDATING
+                            and updated_view.active_passage is not None
+                            and updated_view.active_passage.kind is PassageKind.CONSOLIDATION
+                        ):
+                            typer.echo("All sections learned. Entering whole-Psalm consolidation.")
+                        elif updated_view.active_passage is not None:
+                            typer.echo(
+                                f"Advancing to {_section_label(updated_view.active_passage)}."
+                            )
+                    if _render_completed_states(updated_view):
+                        return
+                    continue
                 if assessment.result is RecitationResult.PASS:
-                    typer.echo("First successful recitation recorded. One more pass required.")
+                    typer.echo("Successful recitation recorded. One more pass required.")
                     continue
                 if assessment.result is RecitationResult.RETRY:
-                    _handle_reinforcement(container, passage_id, passage.canonical_text)
+                    _handle_reinforcement(container, active.id, active.canonical_text)
                     continue
                 typer.echo("Manual review required.")
                 return
 
             if session.phase is LearningPhase.NEEDS_REINFORCEMENT:
-                _handle_reinforcement(container, passage_id, passage.canonical_text)
+                _handle_reinforcement(container, active.id, active.canonical_text)
                 continue
 
             if session.phase is LearningPhase.LEARNED:
-                typer.echo("Already learned. Use `psalter review` for due review sessions.")
-                return
+                updated = container.psalm_learning_service.advance_after_passage_learned(
+                    view.psalm.id
+                )
+                if _render_completed_states(updated):
+                    return
+                continue
+
+
+def _render_completed_states(view: PsalmLearningViewDTO) -> bool:
+    if view.plan.status is PsalmLearningStatus.LEARNED:
+        typer.echo("Psalm learned. Use `psalter review` for due review sessions.")
+        return True
+    if view.plan.status is PsalmLearningStatus.CONSOLIDATING and not view.consolidation_available:
+        typer.echo(f"Psalm {view.psalm.psalm_number} is only partially imported.")
+        typer.echo("Whole-Psalm consolidation is unavailable.")
+        return True
+    return False
+
+
+def _print_header(view: PsalmLearningViewDTO, passage: PassageDetailDTO) -> None:
+    typer.echo("")
+    typer.echo(f"Psalm {view.psalm.psalm_number}")
+    typer.echo(f"Translation: {view.psalm.translation_id.upper()}")
+    typer.echo(f"Status: {view.plan.status.value.replace('_', ' ')}")
+    if passage.kind is PassageKind.CONSOLIDATION:
+        typer.echo("Current section: complete Psalm")
+    else:
+        typer.echo(f"Current section: {_section_label(passage)}")
+        if view.section_index is not None:
+            typer.echo(f"Section {view.section_index} of {view.section_count}")
+    typer.echo(f"Sections learned: {view.sections_learned} of {view.section_count}")
+    if not view.consolidation_available:
+        typer.echo("Whole-Psalm consolidation unavailable: partial import.")
+
+
+def _run_recitation(container: Container, passage: PassageDetailDTO) -> RecitationAssessmentDTO:
+    typer.echo("")
+    method = typer.prompt("Recitation method [typed/spoken]", default="typed").strip().casefold()
+    if method not in {"typed", "spoken"}:
+        typer.secho(
+            "Invalid recitation method. Choose either typed or spoken.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    try:
+        if method == "typed":
+            typer.echo("Type your recitation. End with a line containing only .done")
+            text = _read_multiline_submission()
+            return container.recitation_service.submit_text(
+                RecitationSubmission(
+                    passage_id=passage.id,
+                    source=RecitationSource.TYPED,
+                    text=text,
+                )
+            )
+
+        typer.echo("Spoken recitation selected.")
+        typer.echo("Press Enter to begin recording.")
+        _await_enter()
+        typer.echo("Recording...")
+        typer.echo("Press Enter to stop.")
+        return container.spoken_recitation_service.record_transcribe_and_submit(
+            passage.id,
+            wait_for_stop=_wait_for_enter_with_timeout,
+            before_transcribe=_print_transcribing,
+        )
+    except (
+        PersistenceConflictError,
+        AudioRecorderNotConfiguredError,
+        AudioRecordingFailedError,
+        AudioArtifactInvalidError,
+        InvalidLearningTransitionError,
+        LearningSessionNotFoundError,
+        PassageNotFoundError,
+        TranscriberNotConfiguredError,
+        WhisperExecutableNotFoundError,
+        WhisperModelNotFoundError,
+        WhisperProcessFailedError,
+        TranscriptOutputMissingError,
+        TranscriptEmptyError,
+        ArtifactCleanupFailedError,
+        UnsupportedAudioPlatformError,
+    ) as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+
+
+def _section_label(passage: PassageDetailDTO) -> str:
+    if passage.start_verse == passage.end_verse:
+        return f"verse {passage.start_verse}"
+    return f"verses {passage.start_verse}-{passage.end_verse}"
 
 
 def _read_multiline_submission() -> str:
@@ -223,7 +328,6 @@ def _print_transcribing() -> None:
 
 
 def _print_assessment(assessment: RecitationAssessmentDTO) -> None:
-    # DTO shape stays presentation-neutral; CLI rendering is intentionally local.
     typer.echo(f"Result: {assessment.result.value}")
     typer.echo(f"Weighted accuracy: {assessment.weighted_accuracy:.3f}")
     typer.echo(f"Omissions: {assessment.omission_count}")
@@ -240,19 +344,10 @@ def _print_assessment(assessment: RecitationAssessmentDTO) -> None:
         typer.echo("Omitted:")
         for item in assessment.omissions[:issues_to_show]:
             typer.echo(f'- "{item}"')
-        if len(assessment.omissions) > issues_to_show:
-            typer.echo(
-                f"... and {len(assessment.omissions) - issues_to_show} more omission issue(s)"
-            )
     if assessment.substitutions:
         typer.echo("Substitutions:")
         for expected, received in assessment.substitutions[:issues_to_show]:
             typer.echo(f'- expected "{expected}", received "{received}"')
-        if len(assessment.substitutions) > issues_to_show:
-            typer.echo(
-                "... and "
-                f"{len(assessment.substitutions) - issues_to_show} more substitution issue(s)"
-            )
 
 
 def _handle_reinforcement(container: Container, passage_id: str, canonical_text: str) -> None:

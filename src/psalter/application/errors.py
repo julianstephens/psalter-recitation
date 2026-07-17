@@ -18,6 +18,38 @@ class PassageAlreadyExistsError(ApplicationError):
     """Raised when creating a passage that already exists."""
 
 
+class PsalmNotFoundError(ApplicationError):
+    """Raised when a requested Psalm does not exist."""
+
+
+class PsalmAlreadyExistsError(ApplicationError):
+    """Raised when creating a Psalm that already exists."""
+
+
+class PsalmTranslationAmbiguousError(ApplicationError):
+    """Raised when Psalm translation resolution is ambiguous."""
+
+
+class PsalmIncompleteError(ApplicationError):
+    """Raised when a complete-Psalm operation requires complete Psalm data."""
+
+
+class PsalmSegmentationConflictError(ApplicationError):
+    """Raised when Psalm segmentation would conflict with existing state."""
+
+
+class PsalmLearningPlanConflictError(ApplicationError):
+    """Raised when a Psalm learning plan write conflicts with current state."""
+
+
+class NoActivePassageError(ApplicationError):
+    """Raised when a Psalm plan has no active passage to resolve."""
+
+
+class WholePsalmConsolidationUnavailableError(ApplicationError):
+    """Raised when whole-Psalm consolidation is unavailable."""
+
+
 class LearningSessionNotFoundError(ApplicationError):
     """Raised when a learning session does not exist."""
 
