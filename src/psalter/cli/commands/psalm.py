@@ -13,6 +13,7 @@ from psalter.application.errors import (
     PsalmTranslationAmbiguousError,
 )
 from psalter.bootstrap import build_container
+from psalter.cli.readiness import require_ready
 from psalter.config import build_config
 
 
@@ -65,6 +66,7 @@ def register(app: typer.Typer) -> None:
     ) -> None:
         container = build_container(build_config(data_dir=data_dir))
         container.migrator.apply_pending()
+        require_ready(container)
         psalms = container.psalm_service.list_all()
         if not psalms:
             typer.echo("No Psalms imported.")
@@ -86,6 +88,7 @@ def register(app: typer.Typer) -> None:
     ) -> None:
         container = build_container(build_config(data_dir=data_dir))
         container.migrator.apply_pending()
+        require_ready(container)
         try:
             progress = container.psalm_learning_service.get_progress(
                 psalm_number=psalm_number,

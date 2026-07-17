@@ -4,10 +4,13 @@ from dataclasses import dataclass
 
 from psalter.adapters.audio import FfmpegAudioRecorder, UnsupportedAudioRecorder
 from psalter.adapters.persistence import (
+    SqliteCatalogImportProgressRepository,
     SqliteDatabase,
+    SqliteInstallationSettingsRepository,
     SqliteLearningSessionRepository,
     SqliteMigrator,
     SqlitePassageRepository,
+    SqlitePsalmCatalogCommitter,
     SqlitePsalmLearningPlanRepository,
     SqlitePsalmRepository,
     SqliteRecitationCommitter,
@@ -15,8 +18,16 @@ from psalter.adapters.persistence import (
     SqliteReviewRepository,
     migrations_dir,
 )
+from psalter.adapters.scripture_catalog_provider import (
+    HelloAoScriptureCatalogProvider,
+    MockScriptureCatalogProvider,
+)
 from psalter.adapters.system_clock import SystemClock
 from psalter.adapters.transcription import UnsupportedTranscriber, WhisperCppTranscriber
+from psalter.application.services.installation import (
+    InstallationReadinessService,
+    PsalmCatalogInstaller,
+)
 from psalter.application.services.learning import LearningService
 from psalter.application.services.passage import PassageService
 from psalter.application.services.progress import ProgressService
@@ -35,6 +46,9 @@ from psalter.application.services.spoken_recitation import (
     SpokenRecitationService,
 )
 from psalter.config import AppConfig, build_config
+from psalter.logging import configure_logging, debug_event, get_logger
+
+logger = get_logger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,10 +64,22 @@ class Container:
     spoken_recitation_service: SpokenRecitationService
     review_service: ReviewService
     progress_service: ProgressService
+    installer: PsalmCatalogInstaller
+    installation_readiness: InstallationReadinessService
 
 
 def build_container(config: AppConfig | None = None) -> Container:
     resolved = config or build_config()
+    configure_logging(resolved.log_level)
+    debug_event(
+        logger,
+        "container_build_started",
+        data_dir=str(resolved.data_dir),
+        db_path=str(resolved.db_path),
+        scripture_provider=resolved.scripture_provider,
+        recorder_configured=resolved.recorder is not None,
+        transcriber_configured=resolved.whisper_cpp is not None,
+    )
     db = SqliteDatabase(path=resolved.db_path)
     migrator = SqliteMigrator(database=db, migrations_dir=migrations_dir())
     clock = SystemClock()
@@ -64,21 +90,16 @@ def build_container(config: AppConfig | None = None) -> Container:
     learning_repo = SqliteLearningSessionRepository(db)
     recitation_repo = SqliteRecitationRepository(db)
     review_repo = SqliteReviewRepository(db)
+    installation_repo = SqliteInstallationSettingsRepository(db)
+    import_progress_repo = SqliteCatalogImportProgressRepository(db)
+    catalog_committer = SqlitePsalmCatalogCommitter(db)
     recitation_committer = SqliteRecitationCommitter(db)
     segmentation_policy = WordCountSegmentationPolicy()
+    scripture_provider = build_scripture_provider(resolved)
 
     psalm_service = PsalmService(psalms=psalm_repo, segmentation_policy=segmentation_policy)
     passage_service = PassageService(passages=passage_repo, psalms=psalm_repo)
     learning_service = LearningService(passages=passage_repo, sessions=learning_repo, clock=clock)
-    psalm_learning_service = PsalmLearningService(
-        psalms=psalm_repo,
-        plans=plan_repo,
-        passages=passage_repo,
-        sessions=learning_repo,
-        learning_service=learning_service,
-        clock=clock,
-        default_translation_id=resolved.default_translation_id,
-    )
     recitation_service = RecitationService(
         passages=passage_repo,
         sessions=learning_repo,
@@ -117,6 +138,33 @@ def build_container(config: AppConfig | None = None) -> Container:
         passages=passage_repo,
         psalms=psalm_repo,
     )
+    installer = PsalmCatalogInstaller(
+        provider_name=resolved.scripture_provider,
+        provider=scripture_provider,
+        settings=installation_repo,
+        progress=import_progress_repo,
+        committer=catalog_committer,
+        psalms=psalm_repo,
+        passages=passage_repo,
+        segmentation_policy=segmentation_policy,
+        clock=clock,
+    )
+    readiness = InstallationReadinessService(settings=installation_repo)
+    installed_default = installation_repo.get_settings()
+    resolved_default_translation_id = (
+        installed_default.default_translation_id
+        if installed_default is not None and installed_default.default_translation_id is not None
+        else resolved.default_translation_id
+    )
+    psalm_learning_service = PsalmLearningService(
+        psalms=psalm_repo,
+        plans=plan_repo,
+        passages=passage_repo,
+        sessions=learning_repo,
+        learning_service=learning_service,
+        clock=clock,
+        default_translation_id=resolved_default_translation_id,
+    )
     progress_service = ProgressService(
         passages=passage_repo,
         sessions=learning_repo,
@@ -125,7 +173,7 @@ def build_container(config: AppConfig | None = None) -> Container:
         clock=clock,
     )
 
-    return Container(
+    container = Container(
         config=resolved,
         db=db,
         migrator=migrator,
@@ -137,10 +185,32 @@ def build_container(config: AppConfig | None = None) -> Container:
         spoken_recitation_service=spoken_recitation_service,
         review_service=review_service,
         progress_service=progress_service,
+        installer=installer,
+        installation_readiness=readiness,
     )
+    debug_event(
+        logger,
+        "container_build_completed",
+        default_translation_id=resolved_default_translation_id,
+        retention_policy=retention_policy.value,
+    )
+    return container
 
 
 def initialize_storage(config: AppConfig | None = None) -> AppConfig:
     container = build_container(config)
-    container.migrator.apply_pending()
+    applied = container.migrator.apply_pending()
+    debug_event(logger, "storage_initialized", applied_migrations=tuple(applied))
     return container.config
+
+
+def build_scripture_provider(
+    config: AppConfig,
+) -> HelloAoScriptureCatalogProvider | MockScriptureCatalogProvider:
+    debug_event(logger, "scripture_provider_selected", provider=config.scripture_provider)
+    if config.scripture_provider == "mock":
+        return MockScriptureCatalogProvider()
+    return HelloAoScriptureCatalogProvider(
+        base_url=config.scripture_provider_base_url,
+        timeout_seconds=config.scripture_provider_timeout_seconds,
+    )

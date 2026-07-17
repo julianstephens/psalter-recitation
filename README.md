@@ -2,142 +2,96 @@
 
 A CLI-first application for Psalm memorization and review.
 
-## Purpose
-
-This project models and orchestrates a Psalm-first learning flow:
-
-1. Select a Psalm by number.
-2. Let the application choose and remember internal section passages.
-3. Exposure: show the complete canonical section or whole Psalm target.
-4. Practice: progress through deterministic masking levels for section learning.
-5. Typed recitation: submit unaided text (`.done` ends multiline input).
-6. Spoken recitation: record local microphone audio, transcribe with local whisper.cpp.
-7. Assessment: normalize and align text with weighted scoring.
-8. Confirmation: require two passing unaided recitations before a section is learned.
-9. Consolidation: require two passing whole-Psalm recitations after all sections are learned.
-10. Scheduling: create initial review one day after learning.
-
-The CLI and any future UI must share the same application services and domain model.
-
-## Status
-
-Implemented:
-
-- Ports-and-adapters structure with inward dependency direction.
-- Typed domain models and state transitions for Psalms, passages, and learning plans.
-- Application services for Psalm import, Psalm-first learning workflow, typed recitation assessment, review lookup, and progress.
-- Spoken recitation orchestration that records audio and submits whisper transcript through the same recitation service path.
-- SQLite adapter with tracked SQL migrations.
-- Typer commands: init, psalm add/list/show, passage list/show, learn, review, progress.
-- Unit and integration tests.
-
-Currently unsupported / intentionally deferred:
-
-- Pronunciation scoring.
-- Semantic paraphrase acceptance.
-- Full seven-station review schedule.
-- Final assessment thresholds (provisional and versioned).
-
 ## Setup
 
 ```bash
 uv sync
 uv run psalter init
-uv run psalter psalm add 23 --translation-id esv --verse "1:The LORD is my shepherd."
-uv run python scripts/seed_psalms_from_api.py --translation BSB --psalm 23 --psalm 90
-uv run psalter psalm list
-uv run psalter psalm show 23
-uv run psalter learn 23
+uv run psalter learn 90
 uv run psalter progress
 uv run psalter review
-uv run pytest
-uv run ruff check .
-uv run ruff format --check .
-uv run mypy src
 ```
 
-Normal workflow notes:
+`psalter init` installs a complete translation catalog (Psalms 1-150), preserves verse
+boundaries, generates internal learning sections, and stores one selected translation as the
+default.
 
-- Passages are internal learning sections generated automatically from Psalm verses.
-- `psalter learn 23` resumes the active section for Psalm 23; you do not need to remember a passage ID.
-- When all sections are learned, the Psalm enters whole-Psalm consolidation before it is marked learned.
-- `psalter passage list --psalm 23` and `psalter passage show ...` remain available for inspection.
-- `psalter passage add` is an advanced partial-import tool. Once a Psalm is created that way, upgrading it to a complete Psalm import is not supported yet.
+Additional translations can also be installed. The Psalter keeps exactly one default
+translation for normal commands like `psalter learn 90`.
 
-When `psalter learn` reaches recitation, choose `typed` or `spoken`.
+After initialization, `psalter learn 90` works without a translation flag.
 
-Typed mode keeps the same `.done` multiline workflow.
+Typed recitation requires no audio tooling. Spoken recitation remains optional and local-only
+through ffmpeg + whisper.cpp configuration.
 
-Spoken mode runs completely locally. Prerequisites:
+## Command surface
 
-- A local recorder executable (ffmpeg recommended).
-- A local whisper.cpp CLI executable.
-- A local whisper model file (`.bin`).
+```text
+psalter init
+psalter learn PSALM_NUMBER
+psalter progress
+psalter review
+psalter psalm list
+psalter psalm show PSALM_NUMBER
+psalter settings
+```
 
-No model is bundled and no model or audio is downloaded automatically.
+## Debug logging
 
-Set configuration with environment variables:
+Application diagnostics are disabled during normal use. Enable debug logs on stderr for one
+invocation with:
 
 ```bash
-export PSALTER_WHISPER_EXECUTABLE=/path/to/whisper-cli
-export PSALTER_WHISPER_MODEL=/path/to/ggml-base.en.bin
-export PSALTER_WHISPER_LANGUAGE=en
-export PSALTER_WHISPER_THREADS=4
-export PSALTER_RECORDER_EXECUTABLE=/path/to/ffmpeg
-export PSALTER_AUDIO_INPUT_DEVICE="audio=Microphone Array (Realtek Audio)"
-export PSALTER_RETAIN_AUDIO=0
+uv run psalter --debug init --resume
 ```
 
-Then run:
+Or configure a persistent minimum level:
 
 ```bash
-uv run psalter learn 23
+export PSALTER_LOG_LEVEL=DEBUG
+uv run psalter progress
 ```
 
-During spoken recitation:
+`--log-level` overrides the environment for one invocation. Debug events cover application
+startup, dependency composition, scripture-provider requests, catalog acquisition, and other
+application boundaries. Recitation text, Psalm contents, model files, and audio contents are not
+written to logs.
 
-1. Press Enter to begin recording.
-2. Recite from memory without viewing canonical text.
-3. Press Enter to stop.
+## Recovery
 
-Temporary artifacts are deleted by default. Set `PSALTER_RETAIN_AUDIO=1` to retain local artifacts for debugging.
-
-Transcription remains textual-only assessment. Pronunciation, cadence, and acoustic quality are not graded.
-
-Known limitations:
-
-- Recorder device names vary by platform.
-- whisper.cpp errors can be environment or memory related.
-- Assessment thresholds remain provisional.
-- Tested recording command construction currently targets ffmpeg on desktop platforms.
-
-Assessment currently performs textual normalization/alignment only. It does not evaluate pronunciation and does not accept semantic paraphrase substitutions.
-
-## Psalm seeding script
-
-You can seed complete Psalms directly from the bible.helloao.org API:
+If installation is interrupted:
 
 ```bash
-uv run python scripts/seed_psalms_from_api.py \
-  --translation BSB \
-  --book PSA \
-  --psalm 23 \
-  --psalm 121
+uv run psalter init --resume
 ```
 
-Options:
+To repair missing or invalid Psalm bundles:
 
-- `--data-dir`: override psalter data directory.
+```bash
+uv run psalter init --repair
+```
 
-## Project Structure
+To install another translation and make it the default without an interactive prompt:
+
+```bash
+uv run psalter init --translation KJV --set-default
+```
+
+## Advanced
+
+Manual import and low-level passage inspection remain available for advanced workflows:
+
+- `psalter psalm add`
+- `psalter passage add|list|show`
+- `scripts/seed_psalms_from_api.py` (thin wrapper around the same catalog installer)
+
+## Project structure
 
 ```text
 src/psalter/
-	cli/             # CLI adapter only (parsing + presentation)
-	application/     # services, DTOs, app-level errors
-	domain/          # entities, value constraints, transition rules
-	ports/           # dependency-inversion protocols
-	adapters/        # sqlite/system/unsupported implementations
-	bootstrap.py     # composition root
-	config.py        # local path configuration
+    cli/
+    application/
+    domain/
+    ports/
+    adapters/
 ```

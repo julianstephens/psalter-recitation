@@ -108,3 +108,55 @@ class ArtifactCleanupFailedError(ApplicationError):
 
 class UnsupportedAudioPlatformError(ApplicationError):
     """Raised when recorder platform command generation is unsupported."""
+
+
+class InstallationNotReadyError(ApplicationError):
+    """Raised when commands require a ready installation."""
+
+
+class InstallationIncompleteError(ApplicationError):
+    """Raised when installation was started but not completed."""
+
+
+class InstallationAlreadyReadyError(ApplicationError):
+    """Raised when attempting initialization on a ready installation."""
+
+
+class TranslationSelectionRequiredError(ApplicationError):
+    """Raised when a translation is required but not provided."""
+
+
+class TranslationNotSupportedError(ApplicationError):
+    """Raised when a translation ID is unavailable from the provider."""
+
+
+class CatalogInstallationFailedError(ApplicationError):
+    """Raised when catalog import fails."""
+
+
+class CatalogValidationFailedError(ApplicationError):
+    """Raised when catalog import validation fails."""
+
+
+class CatalogRepairUnsafeError(ApplicationError):
+    """Raised when repair would invalidate learning history."""
+
+
+class ScriptureProviderUnavailableError(ApplicationError):
+    """Raised when the scripture provider is unavailable."""
+
+
+class TranslationCatalogUnavailableError(ApplicationError):
+    """Raised when translation catalog retrieval fails."""
+
+
+class PsalmDownloadFailedError(ApplicationError):
+    """Raised when a Psalm cannot be downloaded."""
+
+
+class PsalmPayloadInvalidError(ApplicationError):
+    """Raised when provider Psalm payload is malformed."""
+
+
+class TranslationChangeBlockedError(ApplicationError):
+    """Raised when translation replacement is blocked by policy."""

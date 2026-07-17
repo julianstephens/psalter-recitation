@@ -241,6 +241,7 @@ name = "psalter-recitation"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "rich" },
     { name = "typer" },
 ]
 
@@ -253,7 +254,10 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "typer", specifier = ">=0.16.0" }]
+requires-dist = [
+    { name = "rich", specifier = ">=14.1.0" },
+    { name = "typer", specifier = ">=0.16.0" },
+]
 
 [package.metadata.requires-dev]
 dev = [
