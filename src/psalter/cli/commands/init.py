@@ -1,15 +1,28 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Annotated
 
 import typer
+from rich.progress import (
+    BarColumn,
+    Progress,
+    SpinnerColumn,
+    TaskProgressColumn,
+    TextColumn,
+    TimeElapsedColumn,
+)
 
 from psalter.application.errors import (
     ApplicationError,
     TranslationNotSupportedError,
 )
-from psalter.bootstrap import build_container
+from psalter.application.services.installation import (
+    CatalogInstallationProgress,
+    CatalogInstallationResult,
+)
+from psalter.bootstrap import Container, build_container
 from psalter.config import build_config
 from psalter.ports.scripture_catalog_provider import TranslationInfo
 
@@ -40,8 +53,9 @@ def register(app: typer.Typer) -> None:
                 container.installer.list_translations()
             )
             typer.echo(f"Installing {selected_translation.upper()} Psalter...")
-            result = container.installer.initialize(
-                selected_translation,
+            result = _run_install_with_progress(
+                container=container,
+                translation_id=selected_translation,
                 resume=resume,
                 repair=repair,
             )
@@ -80,3 +94,47 @@ def _prompt_translation(translations: tuple[TranslationInfo, ...]) -> str:
         if raw.casefold() == translation_id.casefold():
             return translation_id
     raise TranslationNotSupportedError(f"Unsupported translation: {raw}")
+
+
+def _run_install_with_progress(
+    *,
+    container: Container,
+    translation_id: str,
+    resume: bool,
+    repair: bool,
+) -> CatalogInstallationResult:
+    if not sys.stdout.isatty():
+        return container.installer.initialize(
+            translation_id,
+            resume=resume,
+            repair=repair,
+        )
+
+    description = f"[green]Downloading {translation_id.upper()} Psalter"
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TextColumn("Psalm {task.fields[current_psalm]}/{task.total}"),
+        TimeElapsedColumn(),
+    ) as progress:
+        task_id = progress.add_task(
+            description,
+            total=150,
+            current_psalm=0,
+        )
+
+        def on_progress(update: CatalogInstallationProgress) -> None:
+            progress.update(
+                task_id,
+                completed=update.completed_count,
+                current_psalm=update.psalm_number,
+            )
+
+        return container.installer.initialize(
+            translation_id,
+            resume=resume,
+            repair=repair,
+            on_progress=on_progress,
+        )

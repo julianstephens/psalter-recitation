@@ -3,6 +3,7 @@ name = "psalter-recitation"
 version = "0.1.0"
 requires-python = ">=3.14"
 dependencies = [
+	"rich>=14.1.0",
 	"typer>=0.16.0",
 ]
 

@@ -28,8 +28,8 @@ def configure_logging(
         handler.setFormatter(logging.Formatter(_DEFAULT_FORMAT))
         logger.addHandler(handler)
 
-    for handler in logger.handlers:
-        handler.setLevel(resolved_level)
+    for existing_handler in logger.handlers:
+        existing_handler.setLevel(resolved_level)
 
 
 def get_logger(name: str) -> logging.Logger:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -46,6 +47,15 @@ class CatalogInstallationResult:
     translation_name: str
     imported_psalm_count: int
     skipped_psalm_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogInstallationProgress:
+    translation_id: str
+    psalm_number: int
+    completed_count: int
+    total_count: int
+    status: str
 
 
 class InstallationReadinessService:
@@ -103,6 +113,7 @@ class PsalmCatalogInstaller:
         *,
         resume: bool = False,
         repair: bool = False,
+        on_progress: Callable[[CatalogInstallationProgress], None] | None = None,
     ) -> CatalogInstallationResult:
         now = self._clock.now()
         selected = self._resolve_selected_translation(translation_id)
@@ -174,11 +185,27 @@ class PsalmCatalogInstaller:
             )
             if should_skip:
                 skipped += 1
+                self._emit_progress(
+                    on_progress,
+                    translation_id=selected.id,
+                    psalm_number=psalm_number,
+                    completed_count=imported + skipped,
+                    total_count=len(self._required_psalm_numbers),
+                    status="skipped",
+                )
                 continue
             if self._is_psalm_bundle_valid(selected.id, psalm_number):
                 self._progress.mark_imported(installing.id, psalm_number)
                 imported_numbers.add(psalm_number)
                 skipped += 1
+                self._emit_progress(
+                    on_progress,
+                    translation_id=selected.id,
+                    psalm_number=psalm_number,
+                    completed_count=imported + skipped,
+                    total_count=len(self._required_psalm_numbers),
+                    status="skipped",
+                )
                 continue
             existing = self._psalms.get_by_translation_and_number(selected.id, psalm_number)
             if (
@@ -217,6 +244,14 @@ class PsalmCatalogInstaller:
                     passages=passages,
                 )
                 imported += 1
+                self._emit_progress(
+                    on_progress,
+                    translation_id=selected.id,
+                    psalm_number=psalm_number,
+                    completed_count=imported + skipped,
+                    total_count=len(self._required_psalm_numbers),
+                    status="imported",
+                )
             except (ApplicationError, ValueError, TypeError, sqlite3.Error) as exc:
                 reason = str(exc).strip() or "unknown installation failure"
                 self._progress.mark_failed(installing.id, psalm_number, reason)
@@ -242,6 +277,28 @@ class PsalmCatalogInstaller:
             translation_name=selected.name,
             imported_psalm_count=imported,
             skipped_psalm_count=skipped,
+        )
+
+    def _emit_progress(
+        self,
+        callback: Callable[[CatalogInstallationProgress], None] | None,
+        *,
+        translation_id: str,
+        psalm_number: int,
+        completed_count: int,
+        total_count: int,
+        status: str,
+    ) -> None:
+        if callback is None:
+            return
+        callback(
+            CatalogInstallationProgress(
+                translation_id=translation_id,
+                psalm_number=psalm_number,
+                completed_count=completed_count,
+                total_count=total_count,
+                status=status,
+            )
         )
 
     def _resolve_selected_translation(self, requested_translation_id: str) -> TranslationInfo:
