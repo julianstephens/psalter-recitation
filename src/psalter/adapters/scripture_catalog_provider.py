@@ -29,9 +29,7 @@ class HelloAoScriptureCatalogProvider(ScriptureCatalogProvider):
     timeout_seconds: float = 20.0
 
     def list_translations(self) -> tuple[TranslationInfo, ...]:
-        endpoints = (
-            "/available_translations.json",
-        )
+        endpoints = ("/available_translations.json",)
         last_error: Exception | None = None
         for endpoint in endpoints:
             try:

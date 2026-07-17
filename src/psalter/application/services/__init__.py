@@ -7,6 +7,7 @@ from psalter.application.services.recitation import RecitationService
 from psalter.application.services.review import ReviewService
 from psalter.application.services.segmentation import WordCountSegmentationPolicy
 from psalter.application.services.spoken_recitation import SpokenRecitationService
+from psalter.application.services.workflow import PsalmLearningWorkflow
 
 __all__ = [
     "LearningService",
@@ -17,5 +18,6 @@ __all__ = [
     "RecitationService",
     "ReviewService",
     "SpokenRecitationService",
+    "PsalmLearningWorkflow",
     "WordCountSegmentationPolicy",
 ]

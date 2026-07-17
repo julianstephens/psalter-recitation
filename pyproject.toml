@@ -3,8 +3,11 @@ name = "psalter-recitation"
 version = "0.1.0"
 requires-python = ">=3.14"
 dependencies = [
+	"fastapi>=0.116.0",
+	"python-multipart>=0.0.20",
 	"rich>=14.1.0",
 	"typer>=0.16.0",
+	"uvicorn[standard]>=0.35.0",
 ]
 
 [project.scripts]
@@ -16,6 +19,7 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+	"httpx>=0.28.1",
 	"mypy>=1.16.0",
 	"pytest>=8.4.0",
 	"pytest-cov>=6.2.0",
