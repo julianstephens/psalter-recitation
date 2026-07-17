@@ -31,9 +31,6 @@ class HelloAoScriptureCatalogProvider(ScriptureCatalogProvider):
     def list_translations(self) -> tuple[TranslationInfo, ...]:
         endpoints = (
             "/available_translations.json",
-            "/available_translations",
-            "/translations.json",
-            "/translations",
         )
         last_error: Exception | None = None
         for endpoint in endpoints:
