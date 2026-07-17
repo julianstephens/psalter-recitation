@@ -68,6 +68,10 @@ class HelloAoScriptureCatalogProvider(ScriptureCatalogProvider):
                         f"Scripture provider returned HTTP {status}."
                     )
                 return json.loads(response.read().decode("utf-8"))
+        except json.JSONDecodeError as exc:
+            raise TranslationCatalogUnavailableError(
+                "Scripture provider returned invalid JSON."
+            ) from exc
         except HTTPError as exc:
             raise TranslationCatalogUnavailableError(
                 f"Scripture provider returned HTTP {exc.code}."

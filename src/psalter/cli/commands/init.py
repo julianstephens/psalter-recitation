@@ -35,11 +35,11 @@ def register(app: typer.Typer) -> None:
         ):
             typer.echo(f"Psalter is already initialized with {settings.default_translation_id}.")
             return
-        selected_translation = translation or _prompt_translation(
-            container.installer.list_translations()
-        )
-        typer.echo(f"Installing {selected_translation.upper()} Psalter...")
         try:
+            selected_translation = translation or _prompt_translation(
+                container.installer.list_translations()
+            )
+            typer.echo(f"Installing {selected_translation.upper()} Psalter...")
             result = container.installer.initialize(
                 selected_translation,
                 resume=resume,
