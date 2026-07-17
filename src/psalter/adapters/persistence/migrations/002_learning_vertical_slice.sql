@@ -1,3 +1,23 @@
+CREATE TEMP TABLE migration_guard (
+    value INTEGER NOT NULL CHECK (value = 1)
+);
+
+INSERT INTO migration_guard(value)
+SELECT CASE
+    WHEN EXISTS (
+        SELECT 1
+        FROM recitation_attempts ra
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM learning_sessions ls
+            WHERE ls.passage_id = ra.passage_id
+        )
+    ) THEN 0
+    ELSE 1
+END;
+
+DROP TABLE migration_guard;
+
 CREATE TABLE learning_sessions_new (
     id TEXT PRIMARY KEY,
     passage_id TEXT NOT NULL UNIQUE,

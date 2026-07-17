@@ -10,6 +10,7 @@ from psalter.application.errors import (
     InvalidLearningTransitionError,
     LearningSessionNotFoundError,
     PassageNotFoundError,
+    PersistenceConflictError,
 )
 from psalter.bootstrap import Container, build_container
 from psalter.config import build_config
@@ -82,13 +83,17 @@ def register(app: typer.Typer) -> None:
                 typer.echo("")
                 typer.echo("Type your recitation. End with a line containing only .done")
                 text = _read_multiline_submission()
-                assessment = container.recitation_service.submit_text(
-                    RecitationSubmission(
-                        passage_id=passage_id,
-                        source=RecitationSource.TYPED,
-                        text=text,
+                try:
+                    assessment = container.recitation_service.submit_text(
+                        RecitationSubmission(
+                            passage_id=passage_id,
+                            source=RecitationSource.TYPED,
+                            text=text,
+                        )
                     )
-                )
+                except PersistenceConflictError as exc:
+                    typer.secho(str(exc), fg=typer.colors.RED, err=True)
+                    raise typer.Exit(code=1) from exc
                 _print_assessment(assessment)
                 if (
                     assessment.result is RecitationResult.PASS

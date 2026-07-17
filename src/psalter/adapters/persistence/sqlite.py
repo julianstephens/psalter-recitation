@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from psalter.application.errors import PassageAlreadyExistsError
+from psalter.application.errors import PassageAlreadyExistsError, PersistenceConflictError
 from psalter.domain.learning import LearningPhase, LearningSession
 from psalter.domain.passage import Passage
 from psalter.domain.recitation import (
@@ -68,6 +68,10 @@ def _deserialize_alignment(raw_json: str) -> tuple[AlignmentOperation, ...]:
     )
 
 
+def _quote_sql_text(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
 @dataclass(frozen=True, slots=True)
 class SqliteDatabase:
     path: Path
@@ -98,14 +102,15 @@ class SqliteMigrator:
     def apply_pending(self) -> list[str]:
         self._db.initialize()
         with self._db.open_connection() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS schema_migrations (
-                    version TEXT PRIMARY KEY,
-                    applied_at TEXT NOT NULL
+            with conn:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS schema_migrations (
+                        version TEXT PRIMARY KEY,
+                        applied_at TEXT NOT NULL
+                    )
+                    """
                 )
-                """
-            )
             rows = conn.execute("SELECT version FROM schema_migrations").fetchall()
             applied = {str(row["version"]) for row in rows}
             pending = [
@@ -117,12 +122,20 @@ class SqliteMigrator:
             applied_now: list[str] = []
             for migration in pending:
                 sql = migration.read_text(encoding="utf-8")
-                with conn:
-                    conn.executescript(sql)
-                    conn.execute(
-                        "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
-                        (migration.name, datetime.now(UTC).isoformat()),
-                    )
+                applied_at = datetime.now(UTC).isoformat()
+                wrapped_sql = (
+                    "BEGIN IMMEDIATE;\n"
+                    f"{sql}\n"
+                    "INSERT INTO schema_migrations(version, applied_at) VALUES ("
+                    f"{_quote_sql_text(migration.name)}, {_quote_sql_text(applied_at)}"
+                    ");\n"
+                    "COMMIT;\n"
+                )
+                try:
+                    conn.executescript(wrapped_sql)
+                except sqlite3.Error:
+                    conn.rollback()
+                    raise
                 applied_now.append(migration.name)
             return applied_now
 
@@ -439,16 +452,43 @@ class SqliteRecitationCommitter:
         review_state: ReviewState | None,
     ) -> None:
         with self._db.open_connection() as conn, conn:
+            expected_successes = _expected_success_count_before_attempt(
+                attempt=attempt, session=session
+            )
+            update_result = conn.execute(
+                """
+                UPDATE learning_sessions
+                SET phase = ?, practice_level = ?, successful_blank_recitations = ?,
+                    started_at = ?, updated_at = ?, completed_at = ?
+                WHERE id = ?
+                  AND phase = ?
+                  AND successful_blank_recitations = ?
+                """,
+                (
+                    session.phase.value,
+                    session.practice_level,
+                    session.successful_blank_recitations,
+                    _dt_to_str(session.started_at),
+                    _dt_to_str(session.updated_at),
+                    _dt_to_str(session.completed_at),
+                    session.id,
+                    LearningPhase.READY_FOR_RECITATION.value,
+                    expected_successes,
+                ),
+            )
+            if update_result.rowcount != 1:
+                raise PersistenceConflictError(
+                    "Learning session changed during recitation commit; retry submission."
+                )
             conn.execute(
                 """
-                    INSERT INTO recitation_attempts(
-                        id, passage_id, learning_session_id, source, submitted_text,
-                        normalized_text,
-                        attempted_at, result, weighted_accuracy, assessment_policy_version,
-                        omission_count, substitution_count, insertion_count, longest_omitted_span,
-                        alignment_diagnostics
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
+                INSERT INTO recitation_attempts(
+                    id, passage_id, learning_session_id, source, submitted_text,
+                    normalized_text, attempted_at, result, weighted_accuracy,
+                    assessment_policy_version, omission_count, substitution_count,
+                    insertion_count, longest_omitted_span, alignment_diagnostics
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
                 (
                     attempt.id,
                     attempt.passage_id,
@@ -465,30 +505,6 @@ class SqliteRecitationCommitter:
                     attempt.insertion_count,
                     attempt.longest_omitted_span,
                     _serialize_alignment(attempt.alignment_diagnostics),
-                ),
-            )
-            conn.execute(
-                """
-                    INSERT INTO learning_sessions(
-                        id, passage_id, phase, practice_level, successful_blank_recitations,
-                        started_at, updated_at, completed_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(id) DO UPDATE SET
-                        phase = excluded.phase,
-                        practice_level = excluded.practice_level,
-                        successful_blank_recitations = excluded.successful_blank_recitations,
-                        updated_at = excluded.updated_at,
-                        completed_at = excluded.completed_at
-                    """,
-                (
-                    session.id,
-                    session.passage_id,
-                    session.phase.value,
-                    session.practice_level,
-                    session.successful_blank_recitations,
-                    _dt_to_str(session.started_at),
-                    _dt_to_str(session.updated_at),
-                    _dt_to_str(session.completed_at),
                 ),
             )
             if review_state is not None:
@@ -512,3 +528,11 @@ class SqliteRecitationCommitter:
                         review_state.status.value,
                     ),
                 )
+
+
+def _expected_success_count_before_attempt(
+    attempt: RecitationAttempt, session: LearningSession
+) -> int:
+    if attempt.result is RecitationResult.PASS:
+        return max(0, session.successful_blank_recitations - 1)
+    return session.successful_blank_recitations
