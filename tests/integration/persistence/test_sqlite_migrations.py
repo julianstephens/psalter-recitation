@@ -9,14 +9,16 @@ from psalter.adapters.persistence import (
     SqliteDatabase,
     SqliteLearningSessionRepository,
     SqliteMigrator,
-    SqlitePassageRepository,
+    SqlitePsalmLearningPlanRepository,
+    SqlitePsalmRepository,
     SqliteRecitationCommitter,
     SqliteRecitationRepository,
     migrations_dir,
 )
 from psalter.application.errors import PersistenceConflictError
 from psalter.domain.learning import LearningPhase, LearningSession
-from psalter.domain.passage import Passage
+from psalter.domain.passage import Passage, PassageKind
+from psalter.domain.psalm import Psalm, PsalmCompleteness, PsalmVerse
 from psalter.domain.recitation import (
     AlignmentKind,
     AlignmentOperation,
@@ -34,7 +36,11 @@ def test_sqlite_migrations_are_idempotent(tmp_path: Path) -> None:
     first = migrator.apply_pending()
     second = migrator.apply_pending()
 
-    assert first == ["001_initial.sql", "002_learning_vertical_slice.sql"]
+    assert first == [
+        "001_initial.sql",
+        "002_learning_vertical_slice.sql",
+        "003_psalm_first.sql",
+    ]
     assert second == []
 
 
@@ -44,31 +50,56 @@ def test_sqlite_foreign_keys_enabled(tmp_path: Path) -> None:
 
     with db.open_connection() as conn:
         fk_status = conn.execute("PRAGMA foreign_keys").fetchone()
+        plan_foreign_keys = conn.execute("PRAGMA foreign_key_list(psalm_learning_plans)").fetchall()
 
     assert fk_status is not None
     assert int(fk_status[0]) == 1
+    fk_targets = {
+        (str(row["table"]), str(row["from"]), str(row["to"])) for row in plan_foreign_keys
+    }
+    assert ("psalms", "psalm_id", "id") in fk_targets
+    assert ("passages", "active_passage_id", "id") in fk_targets
 
 
 def test_attempt_diagnostics_round_trip_and_session_foreign_key(tmp_path: Path) -> None:
     db = SqliteDatabase(path=tmp_path / "test.db")
     SqliteMigrator(db, migrations_dir()).apply_pending()
-    passages = SqlitePassageRepository(db)
+    psalms = SqlitePsalmRepository(db)
     sessions = SqliteLearningSessionRepository(db)
     attempts = SqliteRecitationRepository(db)
     committer = SqliteRecitationCommitter(db)
+    plan_repo = SqlitePsalmLearningPlanRepository(db)
 
-    passage = Passage(
-        id="esv-psalm-1-1-1",
+    psalm = Psalm(
+        id="esv-psalm-1",
         translation_id="esv",
         psalm_number=1,
-        start_verse=1,
-        end_verse=1,
         canonical_text="Blessed is the man",
+        verse_count=1,
+        completeness=PsalmCompleteness.COMPLETE,
+        verses=(PsalmVerse(verse_number=1, canonical_text="Blessed is the man"),),
     )
-    passages.add(passage)
+    psalms.add_psalm_bundle(
+        psalm,
+        (
+            Passage(
+                id="esv-psalm-1-1-1",
+                psalm_id=psalm.id,
+                translation_id="esv",
+                psalm_number=1,
+                start_verse=1,
+                end_verse=1,
+                canonical_text="Blessed is the man",
+                sequence_number=1,
+                kind=PassageKind.SECTION,
+                segmentation_policy_version="test-v1",
+            ),
+        ),
+    )
+
     session = LearningSession(
         id="s1",
-        passage_id=passage.id,
+        passage_id="esv-psalm-1-1-1",
         phase=LearningPhase.READY_FOR_RECITATION,
         practice_level=4,
         successful_blank_recitations=0,
@@ -79,7 +110,7 @@ def test_attempt_diagnostics_round_trip_and_session_foreign_key(tmp_path: Path) 
     sessions.upsert(session)
     attempt = RecitationAttempt(
         id="a1",
-        passage_id=passage.id,
+        passage_id="esv-psalm-1-1-1",
         learning_session_id=session.id,
         source=RecitationSource.TYPED,
         submitted_text="Blessed is the man",
@@ -103,32 +134,50 @@ def test_attempt_diagnostics_round_trip_and_session_foreign_key(tmp_path: Path) 
         ),
     )
     committer.commit_assessment(attempt=attempt, session=session, review_state=None)
-    latest = attempts.get_latest(passage.id)
+    latest = attempts.get_latest("esv-psalm-1-1-1")
     assert latest is not None
     assert latest.learning_session_id == session.id
     assert latest.assessment_policy_version == "typed-v1"
+    assert plan_repo.list_all() == []
 
 
 def test_atomic_commit_rolls_back_all_writes_on_failure(tmp_path: Path) -> None:
     db = SqliteDatabase(path=tmp_path / "test.db")
     SqliteMigrator(db, migrations_dir()).apply_pending()
-    passages = SqlitePassageRepository(db)
+    psalms = SqlitePsalmRepository(db)
     sessions = SqliteLearningSessionRepository(db)
     attempts = SqliteRecitationRepository(db)
     committer = SqliteRecitationCommitter(db)
 
-    passage = Passage(
-        id="esv-psalm-2-1-1",
+    psalm = Psalm(
+        id="esv-psalm-2",
         translation_id="esv",
         psalm_number=2,
-        start_verse=1,
-        end_verse=1,
         canonical_text="Why do the nations rage",
+        verse_count=1,
+        completeness=PsalmCompleteness.COMPLETE,
+        verses=(PsalmVerse(verse_number=1, canonical_text="Why do the nations rage"),),
     )
-    passages.add(passage)
+    psalms.add_psalm_bundle(
+        psalm,
+        (
+            Passage(
+                id="esv-psalm-2-1-1",
+                psalm_id=psalm.id,
+                translation_id="esv",
+                psalm_number=2,
+                start_verse=1,
+                end_verse=1,
+                canonical_text="Why do the nations rage",
+                sequence_number=1,
+                kind=PassageKind.SECTION,
+                segmentation_policy_version="test-v1",
+            ),
+        ),
+    )
     session = LearningSession(
         id="s2",
-        passage_id=passage.id,
+        passage_id="esv-psalm-2-1-1",
         phase=LearningPhase.READY_FOR_RECITATION,
         practice_level=4,
         successful_blank_recitations=1,
@@ -139,7 +188,7 @@ def test_atomic_commit_rolls_back_all_writes_on_failure(tmp_path: Path) -> None:
     sessions.upsert(session)
     bad_attempt = RecitationAttempt(
         id="a2",
-        passage_id=passage.id,
+        passage_id="esv-psalm-2-1-1",
         learning_session_id="missing-session",
         source=RecitationSource.TYPED,
         submitted_text="Why do the nations rage",
@@ -155,7 +204,7 @@ def test_atomic_commit_rolls_back_all_writes_on_failure(tmp_path: Path) -> None:
         alignment_diagnostics=(),
     )
     review_state = ReviewState(
-        passage_id=passage.id,
+        passage_id="esv-psalm-2-1-1",
         station=1,
         learned_at=datetime.now(UTC),
         next_review_at=datetime.now(UTC),
@@ -166,30 +215,52 @@ def test_atomic_commit_rolls_back_all_writes_on_failure(tmp_path: Path) -> None:
         committer.commit_assessment(attempt=bad_attempt, session=session, review_state=review_state)
 
     assert attempts.count_all() == 0
-    assert sessions.get_by_passage(passage.id) is not None
+    assert sessions.get_by_passage("esv-psalm-2-1-1") is not None
 
 
 def test_recitation_commit_detects_stale_session_and_prevents_lost_update(tmp_path: Path) -> None:
     db = SqliteDatabase(path=tmp_path / "test.db")
     SqliteMigrator(db, migrations_dir()).apply_pending()
-    passages = SqlitePassageRepository(db)
+    psalms = SqlitePsalmRepository(db)
     sessions = SqliteLearningSessionRepository(db)
     attempts = SqliteRecitationRepository(db)
     committer = SqliteRecitationCommitter(db)
 
-    passage = Passage(
-        id="esv-psalm-3-1-1",
+    psalm = Psalm(
+        id="esv-psalm-3",
         translation_id="esv",
         psalm_number=3,
-        start_verse=1,
-        end_verse=1,
         canonical_text="LORD, how are they increased that trouble me",
+        verse_count=1,
+        completeness=PsalmCompleteness.COMPLETE,
+        verses=(
+            PsalmVerse(
+                verse_number=1,
+                canonical_text="LORD, how are they increased that trouble me",
+            ),
+        ),
     )
-    passages.add(passage)
+    psalms.add_psalm_bundle(
+        psalm,
+        (
+            Passage(
+                id="esv-psalm-3-1-1",
+                psalm_id=psalm.id,
+                translation_id="esv",
+                psalm_number=3,
+                start_verse=1,
+                end_verse=1,
+                canonical_text="LORD, how are they increased that trouble me",
+                sequence_number=1,
+                kind=PassageKind.SECTION,
+                segmentation_policy_version="test-v1",
+            ),
+        ),
+    )
     base_time = datetime.now(UTC)
     base_session = LearningSession(
         id="s3",
-        passage_id=passage.id,
+        passage_id="esv-psalm-3-1-1",
         phase=LearningPhase.READY_FOR_RECITATION,
         practice_level=4,
         successful_blank_recitations=0,
@@ -204,10 +275,10 @@ def test_recitation_commit_detects_stale_session_and_prevents_lost_update(tmp_pa
 
     first_attempt = RecitationAttempt(
         id="a3",
-        passage_id=passage.id,
+        passage_id="esv-psalm-3-1-1",
         learning_session_id=base_session.id,
         source=RecitationSource.TYPED,
-        submitted_text=passage.canonical_text,
+        submitted_text=psalm.canonical_text,
         normalized_text="lord how are they increased that trouble me",
         attempted_at=base_time,
         result=RecitationResult.PASS,
@@ -221,10 +292,10 @@ def test_recitation_commit_detects_stale_session_and_prevents_lost_update(tmp_pa
     )
     second_attempt = RecitationAttempt(
         id="a4",
-        passage_id=passage.id,
+        passage_id="esv-psalm-3-1-1",
         learning_session_id=base_session.id,
         source=RecitationSource.TYPED,
-        submitted_text=passage.canonical_text,
+        submitted_text=psalm.canonical_text,
         normalized_text="lord how are they increased that trouble me",
         attempted_at=base_time,
         result=RecitationResult.PASS,
@@ -243,7 +314,7 @@ def test_recitation_commit_detects_stale_session_and_prevents_lost_update(tmp_pa
             attempt=second_attempt, session=second_updated, review_state=None
         )
 
-    latest = sessions.get_by_passage(passage.id)
+    latest = sessions.get_by_passage("esv-psalm-3-1-1")
     assert latest is not None
     assert latest.successful_blank_recitations == 1
     assert attempts.count_all() == 1

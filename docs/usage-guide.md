@@ -18,44 +18,51 @@ uv sync
 uv run psalter init
 ```
 
-## Add a passage
+## Add or seed a Psalm
 
 ```bash
-uv run psalter passage add \
+uv run psalter psalm add 23 \
   --translation-id esv \
-  --psalm 23 \
-  --start-verse 1 \
-  --end-verse 1 \
-  --text "The LORD is my shepherd."
+  --verse "1:The LORD is my shepherd."
 ```
 
-List and show passages:
+List and show Psalms:
 
 ```bash
-uv run psalter passage list
+uv run psalter psalm list
+uv run psalter psalm show 23
+```
+
+Internal passages are generated automatically from verse boundaries. Advanced passage inspection remains available:
+
+```bash
+uv run psalter passage list --psalm 23
 uv run psalter passage show esv-psalm-23-1-1
 ```
 
-### Seed passages from the helloao API
+If you use `psalter passage add`, it creates or extends a partial Psalm import. Upgrading that Psalm to a complete Psalm import later through `psalter psalm add` is not supported yet.
+
+### Seed complete Psalms from the helloao API
 
 ```bash
-uv run python scripts/seed_passages_from_api.py \
+uv run python scripts/seed_psalms_from_api.py \
   --translation BSB \
   --book PSA \
-  --passage 23:1-3 \
-  --passage 121:1-2
+  --psalm 23 \
+  --psalm 121
 ```
 
 Optional flags:
 
 - `--data-dir /path/to/data`
-- `--fail-on-existing`
 
 ## Learn workflow
 
 ```bash
-uv run psalter learn esv-psalm-23-1-1
+uv run psalter learn 23
 ```
+
+The application chooses the internal section, resumes it automatically, and advances to the next section when learned. After all sections are learned, it enters complete-Psalm consolidation before marking the Psalm learned.
 
 When recitation is reached, choose:
 

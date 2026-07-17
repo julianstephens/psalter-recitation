@@ -42,10 +42,11 @@ class LearningSession:
             raise InvalidTransitionError("Only unseen sessions can enter exposure")
         return replace(self, phase=LearningPhase.EXPOSURE, updated_at=when)
 
-    def complete_exposure(self, when: datetime) -> LearningSession:
+    def complete_exposure(self, when: datetime, *, skip_practice: bool = False) -> LearningSession:
         if self.phase is not LearningPhase.EXPOSURE:
             raise InvalidTransitionError("Only exposure sessions can enter practice")
-        return replace(self, phase=LearningPhase.PRACTICE, updated_at=when)
+        next_phase = LearningPhase.READY_FOR_RECITATION if skip_practice else LearningPhase.PRACTICE
+        return replace(self, phase=next_phase, updated_at=when)
 
     def advance_practice_level(self, max_level: int, when: datetime) -> LearningSession:
         if self.phase is not LearningPhase.PRACTICE:

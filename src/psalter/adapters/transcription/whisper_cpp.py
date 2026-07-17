@@ -64,9 +64,7 @@ class WhisperCppTranscriber:
                 f"whisper executable is not runnable: {self._config.executable_path}"
             )
         if not self._config.model_path.exists():
-            raise WhisperModelNotFoundError(
-                f"whisper model not found: {self._config.model_path}"
-            )
+            raise WhisperModelNotFoundError(f"whisper model not found: {self._config.model_path}")
         if not audio_path.exists():
             raise TranscriptOutputMissingError(f"Audio artifact does not exist: {audio_path}")
         if audio_path.stat().st_size == 0:

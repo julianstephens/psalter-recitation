@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from psalter.domain.passage import Passage
+from psalter.domain.passage import Passage, PassageKind
 
 
 class PassageRepository(Protocol):
@@ -13,3 +13,7 @@ class PassageRepository(Protocol):
     def list_all(self) -> list[Passage]: ...
 
     def count_all(self) -> int: ...
+
+    def list_by_psalm(self, psalm_id: str, kind: PassageKind | None = None) -> list[Passage]: ...
+
+    def get_consolidation_passage(self, psalm_id: str) -> Passage | None: ...

@@ -19,12 +19,16 @@ def register(app: typer.Typer) -> None:
     ) -> None:
         container = build_container(build_config(data_dir=data_dir))
         container.migrator.apply_pending()
-        due = container.review_service.get_due_reviews()
+        due = container.review_service.get_due_psalm_reviews()
         if not due:
             typer.echo("No reviews due.")
             return
 
         for item in due:
-            typer.echo(
-                f"Passage {item.passage_id} due at {item.next_review_at} (station {item.station})"
-            )
+            typer.echo(f"Psalm {item.psalm_number}")
+            typer.echo(f"Translation: {item.translation_id}")
+            typer.echo(f"Due: {item.due_label}")
+            typer.echo(f"Reason: {item.reason}")
+            if item.next_review_at is not None:
+                typer.echo(f"Next review at: {item.next_review_at}")
+            typer.echo("")

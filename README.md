@@ -4,15 +4,18 @@ A CLI-first application for Psalm memorization and review.
 
 ## Purpose
 
-This project models and orchestrates a learning flow:
+This project models and orchestrates a Psalm-first learning flow:
 
-1. Exposure: show the complete canonical passage.
-2. Practice: progress through deterministic masking levels.
-3. Typed recitation: submit unaided text (`.done` ends multiline input).
-4. Spoken recitation: record local microphone audio, transcribe with local whisper.cpp.
-4. Assessment: normalize and align text with weighted scoring.
-5. Confirmation: require two passing unaided recitations before learned.
-6. Scheduling: create initial review one day after learning.
+1. Select a Psalm by number.
+2. Let the application choose and remember internal section passages.
+3. Exposure: show the complete canonical section or whole Psalm target.
+4. Practice: progress through deterministic masking levels for section learning.
+5. Typed recitation: submit unaided text (`.done` ends multiline input).
+6. Spoken recitation: record local microphone audio, transcribe with local whisper.cpp.
+7. Assessment: normalize and align text with weighted scoring.
+8. Confirmation: require two passing unaided recitations before a section is learned.
+9. Consolidation: require two passing whole-Psalm recitations after all sections are learned.
+10. Scheduling: create initial review one day after learning.
 
 The CLI and any future UI must share the same application services and domain model.
 
@@ -21,11 +24,11 @@ The CLI and any future UI must share the same application services and domain mo
 Implemented:
 
 - Ports-and-adapters structure with inward dependency direction.
-- Typed domain models and state transitions.
-- Application services for passage management, learning workflow, typed recitation assessment, review lookup, and progress.
+- Typed domain models and state transitions for Psalms, passages, and learning plans.
+- Application services for Psalm import, Psalm-first learning workflow, typed recitation assessment, review lookup, and progress.
 - Spoken recitation orchestration that records audio and submits whisper transcript through the same recitation service path.
 - SQLite adapter with tracked SQL migrations.
-- Typer commands: init, passage add/list/show, learn, review, progress.
+- Typer commands: init, psalm add/list/show, passage list/show, learn, review, progress.
 - Unit and integration tests.
 
 Currently unsupported / intentionally deferred:
@@ -40,16 +43,26 @@ Currently unsupported / intentionally deferred:
 ```bash
 uv sync
 uv run psalter init
-uv run psalter passage add --translation-id esv --psalm 23 --start-verse 1 --end-verse 1 --text "The LORD is my shepherd."
-uv run python scripts/seed_passages_from_api.py --translation BSB --passage 23:1-3
-uv run psalter passage list
-uv run psalter passage show esv-psalm-23-1-1
-uv run psalter learn esv-psalm-23-1-1
+uv run psalter psalm add 23 --translation-id esv --verse "1:The LORD is my shepherd."
+uv run python scripts/seed_psalms_from_api.py --translation BSB --psalm 23 --psalm 90
+uv run psalter psalm list
+uv run psalter psalm show 23
+uv run psalter learn 23
+uv run psalter progress
+uv run psalter review
 uv run pytest
 uv run ruff check .
 uv run ruff format --check .
 uv run mypy src
 ```
+
+Normal workflow notes:
+
+- Passages are internal learning sections generated automatically from Psalm verses.
+- `psalter learn 23` resumes the active section for Psalm 23; you do not need to remember a passage ID.
+- When all sections are learned, the Psalm enters whole-Psalm consolidation before it is marked learned.
+- `psalter passage list --psalm 23` and `psalter passage show ...` remain available for inspection.
+- `psalter passage add` is an advanced partial-import tool. Once a Psalm is created that way, upgrading it to a complete Psalm import is not supported yet.
 
 When `psalter learn` reaches recitation, choose `typed` or `spoken`.
 
@@ -78,7 +91,7 @@ export PSALTER_RETAIN_AUDIO=0
 Then run:
 
 ```bash
-uv run psalter learn esv-psalm-23-1-1
+uv run psalter learn 23
 ```
 
 During spoken recitation:
@@ -100,22 +113,21 @@ Known limitations:
 
 Assessment currently performs textual normalization/alignment only. It does not evaluate pronunciation and does not accept semantic paraphrase substitutions.
 
-## Passage seeding script
+## Psalm seeding script
 
-You can seed Psalm passages directly from the bible.helloao.org API:
+You can seed complete Psalms directly from the bible.helloao.org API:
 
 ```bash
-uv run python scripts/seed_passages_from_api.py \
+uv run python scripts/seed_psalms_from_api.py \
   --translation BSB \
   --book PSA \
-  --passage 23:1-3 \
-  --passage 121:1-2
+  --psalm 23 \
+  --psalm 121
 ```
 
 Options:
 
 - `--data-dir`: override psalter data directory.
-- `--fail-on-existing`: exit non-zero if any requested passage already exists.
 
 ## Project Structure
 

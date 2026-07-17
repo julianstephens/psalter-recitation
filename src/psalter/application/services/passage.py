@@ -7,17 +7,25 @@ from psalter.application.errors import (
     InvalidPassageError,
     PassageAlreadyExistsError,
     PassageNotFoundError,
+    PsalmSegmentationConflictError,
 )
 from psalter.domain.errors import InvariantViolationError
-from psalter.domain.passage import Passage
+from psalter.domain.passage import Passage, PassageKind
+from psalter.domain.psalm import PsalmCompleteness
 from psalter.ports.passage_repository import PassageRepository
+from psalter.ports.psalm_repository import PsalmRepository
 
 _SLUG_PATTERN = re.compile(r"[^a-z0-9]+")
 
 
 class PassageService:
-    def __init__(self, passages: PassageRepository) -> None:
+    def __init__(
+        self,
+        passages: PassageRepository,
+        psalms: PsalmRepository | None = None,
+    ) -> None:
         self._passages = passages
+        self._psalms = psalms
 
     def add(
         self,
@@ -38,16 +46,36 @@ class PassageService:
         try:
             passage = Passage(
                 id=passage_id,
+                psalm_id=f"{normalized_translation_id(translation_id)}-psalm-{psalm_number}",
                 translation_id=translation_id.strip(),
                 psalm_number=psalm_number,
                 start_verse=start_verse,
                 end_verse=end_verse,
                 canonical_text=canonical_text,
+                sequence_number=1,
+                kind=PassageKind.SECTION,
+                segmentation_policy_version=None,
             )
         except InvariantViolationError as exc:
             raise InvalidPassageError(str(exc)) from exc
-        self._passages.add(passage)
-        return _to_detail_dto(passage)
+        persisted = passage
+        if self._psalms is not None:
+            existing_psalm = self._psalms.get_by_id(passage.psalm_id)
+            if (
+                existing_psalm is not None
+                and existing_psalm.completeness is PsalmCompleteness.COMPLETE
+            ):
+                raise InvalidPassageError(
+                    "Manual passage import is only supported for partial Psalms. "
+                    "This Psalm is already fully imported."
+                )
+            try:
+                persisted = self._psalms.add_partial_psalm_passage(passage)
+            except PsalmSegmentationConflictError as exc:
+                raise InvalidPassageError(str(exc)) from exc
+        else:
+            self._passages.add(passage)
+        return _to_detail_dto(persisted)
 
     def list_all(self) -> list[PassageSummaryDTO]:
         return [_to_summary_dto(item) for item in self._passages.list_all()]
@@ -65,28 +93,42 @@ def _build_passage_id(
     start_verse: int,
     end_verse: int,
 ) -> str:
+    return (
+        f"{normalized_translation_id(translation_id)}-psalm-"
+        f"{psalm_number}-{start_verse}-{end_verse}"
+    )
+
+
+def normalized_translation_id(translation_id: str) -> str:
     normalized_translation = _SLUG_PATTERN.sub("-", translation_id.strip().casefold()).strip("-")
     if not normalized_translation:
         raise InvalidPassageError("Translation ID must contain at least one letter or digit")
-    return f"{normalized_translation}-psalm-{psalm_number}-{start_verse}-{end_verse}"
+    return normalized_translation
 
 
 def _to_summary_dto(passage: Passage) -> PassageSummaryDTO:
     return PassageSummaryDTO(
         id=passage.id,
+        psalm_id=passage.psalm_id,
         translation_id=passage.translation_id,
         psalm_number=passage.psalm_number,
         start_verse=passage.start_verse,
         end_verse=passage.end_verse,
+        sequence_number=passage.sequence_number,
+        kind=passage.kind,
     )
 
 
 def _to_detail_dto(passage: Passage) -> PassageDetailDTO:
     return PassageDetailDTO(
         id=passage.id,
+        psalm_id=passage.psalm_id,
         translation_id=passage.translation_id,
         psalm_number=passage.psalm_number,
         start_verse=passage.start_verse,
         end_verse=passage.end_verse,
         canonical_text=passage.canonical_text,
+        sequence_number=passage.sequence_number,
+        kind=passage.kind,
+        segmentation_policy_version=passage.segmentation_policy_version,
     )

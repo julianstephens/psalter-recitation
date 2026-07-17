@@ -18,6 +18,8 @@ This project follows a ports-and-adapters design with a CLI entrypoint and a str
 3. Application services execute use cases against domain models.
 4. Persistence writes happen through repositories and a recitation commit boundary.
 
+The primary user-facing aggregate is now the Psalm. Passage entities remain the internal learning and review units selected automatically by a segmentation policy.
+
 ## Recitation paths
 
 - **Typed recitation**: user submits multiline text, assessed by `RecitationService.submit_text(...)`.

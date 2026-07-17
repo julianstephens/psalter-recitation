@@ -9,6 +9,7 @@ from psalter.application.errors import (
     InvalidPassageError,
     PassageAlreadyExistsError,
     PassageNotFoundError,
+    PsalmAlreadyExistsError,
 )
 from psalter.bootstrap import build_container
 from psalter.config import build_config
@@ -46,13 +47,18 @@ def register(app: typer.Typer) -> None:
                 end_verse=resolved_end,
                 canonical_text=resolved_text,
             )
-        except (PassageAlreadyExistsError, InvalidPassageError) as exc:
+        except (PassageAlreadyExistsError, InvalidPassageError, PsalmAlreadyExistsError) as exc:
             typer.secho(str(exc), fg=typer.colors.RED, err=True)
             raise typer.Exit(code=1) from exc
         typer.echo(f"Added passage {added.id}")
+        typer.echo(
+            "Note: passage add creates or extends a partial Psalm import. "
+            "Upgrading that Psalm to a complete Psalm import is not supported yet."
+        )
 
     @passage_app.command("list")
     def list_command(
+        psalm: Annotated[int | None, typer.Option("--psalm")] = None,
         data_dir: Annotated[
             Path | None,
             typer.Option(help="Override local data directory"),
@@ -61,13 +67,22 @@ def register(app: typer.Typer) -> None:
         container = build_container(build_config(data_dir=data_dir))
         container.migrator.apply_pending()
         passages = container.passage_service.list_all()
+        if psalm is not None:
+            passages = [item for item in passages if item.psalm_number == psalm]
         if not passages:
             typer.echo("No passages configured.")
             return
         for passage in passages:
+            if passage.kind.value == "consolidation":
+                typer.echo(
+                    f"{passage.id} ({passage.translation_id} Psalm "
+                    f"{passage.psalm_number}, consolidation)"
+                )
+                continue
             typer.echo(
                 f"{passage.id} ({passage.translation_id} Psalm "
-                f"{passage.psalm_number}:{passage.start_verse}-{passage.end_verse})"
+                f"{passage.psalm_number}:{passage.start_verse}-{passage.end_verse}, "
+                f"section {passage.sequence_number})"
             )
 
     @passage_app.command("show")
@@ -85,10 +100,15 @@ def register(app: typer.Typer) -> None:
         except PassageNotFoundError as exc:
             typer.secho(str(exc), fg=typer.colors.RED, err=True)
             raise typer.Exit(code=1) from exc
-        typer.echo(
-            f"{passage.id} ({passage.translation_id} Psalm "
-            f"{passage.psalm_number}:{passage.start_verse}-{passage.end_verse})"
+        label = (
+            f"{passage.translation_id} Psalm {passage.psalm_number}"
+            if passage.kind.value == "consolidation"
+            else (
+                f"{passage.translation_id} Psalm {passage.psalm_number}:"
+                f"{passage.start_verse}-{passage.end_verse}"
+            )
         )
+        typer.echo(f"{passage.id} ({label})")
         typer.echo("")
         typer.echo(passage.canonical_text)
 

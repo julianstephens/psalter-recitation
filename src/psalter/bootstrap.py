@@ -8,6 +8,8 @@ from psalter.adapters.persistence import (
     SqliteLearningSessionRepository,
     SqliteMigrator,
     SqlitePassageRepository,
+    SqlitePsalmLearningPlanRepository,
+    SqlitePsalmRepository,
     SqliteRecitationCommitter,
     SqliteRecitationRepository,
     SqliteReviewRepository,
@@ -18,6 +20,8 @@ from psalter.adapters.transcription import UnsupportedTranscriber, WhisperCppTra
 from psalter.application.services.learning import LearningService
 from psalter.application.services.passage import PassageService
 from psalter.application.services.progress import ProgressService
+from psalter.application.services.psalm import PsalmService
+from psalter.application.services.psalm_learning import PsalmLearningService
 from psalter.application.services.recitation import (
     RecitationPolicy,
     RecitationService,
@@ -25,6 +29,7 @@ from psalter.application.services.recitation import (
 )
 from psalter.application.services.review import ReviewService
 from psalter.application.services.scheduling import InitialReviewSchedulingPolicy
+from psalter.application.services.segmentation import WordCountSegmentationPolicy
 from psalter.application.services.spoken_recitation import (
     ArtifactRetentionPolicy,
     SpokenRecitationService,
@@ -37,8 +42,10 @@ class Container:
     config: AppConfig
     db: SqliteDatabase
     migrator: SqliteMigrator
+    psalm_service: PsalmService
     passage_service: PassageService
     learning_service: LearningService
+    psalm_learning_service: PsalmLearningService
     recitation_service: RecitationService
     spoken_recitation_service: SpokenRecitationService
     review_service: ReviewService
@@ -52,13 +59,26 @@ def build_container(config: AppConfig | None = None) -> Container:
     clock = SystemClock()
 
     passage_repo = SqlitePassageRepository(db)
+    psalm_repo = SqlitePsalmRepository(db)
+    plan_repo = SqlitePsalmLearningPlanRepository(db)
     learning_repo = SqliteLearningSessionRepository(db)
     recitation_repo = SqliteRecitationRepository(db)
     review_repo = SqliteReviewRepository(db)
     recitation_committer = SqliteRecitationCommitter(db)
+    segmentation_policy = WordCountSegmentationPolicy()
 
-    passage_service = PassageService(passages=passage_repo)
+    psalm_service = PsalmService(psalms=psalm_repo, segmentation_policy=segmentation_policy)
+    passage_service = PassageService(passages=passage_repo, psalms=psalm_repo)
     learning_service = LearningService(passages=passage_repo, sessions=learning_repo, clock=clock)
+    psalm_learning_service = PsalmLearningService(
+        psalms=psalm_repo,
+        plans=plan_repo,
+        passages=passage_repo,
+        sessions=learning_repo,
+        learning_service=learning_service,
+        clock=clock,
+        default_translation_id=resolved.default_translation_id,
+    )
     recitation_service = RecitationService(
         passages=passage_repo,
         sessions=learning_repo,
@@ -91,7 +111,12 @@ def build_container(config: AppConfig | None = None) -> Container:
         recitation_service=recitation_service,
         retention_policy=retention_policy,
     )
-    review_service = ReviewService(reviews=review_repo, clock=clock)
+    review_service = ReviewService(
+        reviews=review_repo,
+        clock=clock,
+        passages=passage_repo,
+        psalms=psalm_repo,
+    )
     progress_service = ProgressService(
         passages=passage_repo,
         sessions=learning_repo,
@@ -104,8 +129,10 @@ def build_container(config: AppConfig | None = None) -> Container:
         config=resolved,
         db=db,
         migrator=migrator,
+        psalm_service=psalm_service,
         passage_service=passage_service,
         learning_service=learning_service,
+        psalm_learning_service=psalm_learning_service,
         recitation_service=recitation_service,
         spoken_recitation_service=spoken_recitation_service,
         review_service=review_service,

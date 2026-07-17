@@ -28,6 +28,7 @@ class FfmpegRecorderConfig:
 class AppConfig:
     data_dir: Path
     db_path: Path
+    default_translation_id: str | None
     whisper_cpp: WhisperCppConfig | None
     recorder: FfmpegRecorderConfig | None
 
@@ -93,6 +94,7 @@ def build_config(data_dir: Path | None = None) -> AppConfig:
     return AppConfig(
         data_dir=root,
         db_path=root / "psalter.db",
+        default_translation_id=os.getenv("PSALTER_DEFAULT_TRANSLATION"),
         whisper_cpp=whisper_cpp,
         recorder=recorder,
     )

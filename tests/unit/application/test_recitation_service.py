@@ -8,7 +8,7 @@ from psalter.application.services.assessment import TypedTextAssessmentPolicy
 from psalter.application.services.recitation import RecitationPolicy, RecitationService
 from psalter.application.services.scheduling import InitialReviewSchedulingPolicy
 from psalter.domain.learning import LearningPhase, LearningSession
-from psalter.domain.passage import Passage
+from psalter.domain.passage import Passage, PassageKind
 from psalter.domain.recitation import RecitationAttempt, RecitationResult, RecitationSource
 from psalter.domain.review import ReviewState
 
@@ -36,6 +36,18 @@ class FakePassages:
 
     def count_all(self) -> int:
         return 1
+
+    def list_by_psalm(self, psalm_id: str, kind: PassageKind | None = None) -> list[Passage]:
+        if self._passage.psalm_id != psalm_id:
+            return []
+        if kind is not None and self._passage.kind is not kind:
+            return []
+        return [self._passage]
+
+    def get_consolidation_passage(self, psalm_id: str) -> Passage | None:
+        if self._passage.psalm_id == psalm_id and self._passage.kind is PassageKind.CONSOLIDATION:
+            return self._passage
+        return None
 
 
 class FakeSessions:
@@ -104,11 +116,14 @@ def _ready_session(successes: int = 0) -> LearningSession:
 def _passage() -> Passage:
     return Passage(
         id="p1",
+        psalm_id="esv-psalm-23",
         translation_id="esv",
         psalm_number=23,
         start_verse=1,
         end_verse=1,
         canonical_text="The LORD is my shepherd",
+        sequence_number=1,
+        kind=PassageKind.SECTION,
     )
 
 

@@ -4,13 +4,25 @@ import json
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
-from psalter.application.errors import PassageAlreadyExistsError, PersistenceConflictError
+from psalter.application.errors import (
+    PassageAlreadyExistsError,
+    PersistenceConflictError,
+    PsalmAlreadyExistsError,
+    PsalmSegmentationConflictError,
+)
 from psalter.domain.learning import LearningPhase, LearningSession
-from psalter.domain.passage import Passage
+from psalter.domain.passage import Passage, PassageKind
+from psalter.domain.psalm import (
+    Psalm,
+    PsalmCompleteness,
+    PsalmLearningPlan,
+    PsalmLearningStatus,
+    PsalmVerse,
+)
 from psalter.domain.recitation import (
     AlignmentKind,
     AlignmentOperation,
@@ -140,6 +152,468 @@ class SqliteMigrator:
             return applied_now
 
 
+class SqlitePsalmRepository:
+    def __init__(self, database: SqliteDatabase) -> None:
+        self._db = database
+
+    def add_psalm_bundle(self, psalm: Psalm, passages: tuple[Passage, ...]) -> None:
+        try:
+            with self._db.open_connection() as conn, conn:
+                conn.execute(
+                    """
+                    INSERT INTO psalms(
+                        id,
+                        translation_id,
+                        psalm_number,
+                        canonical_text,
+                        verse_count,
+                        completeness
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        psalm.id,
+                        psalm.translation_id,
+                        psalm.psalm_number,
+                        psalm.canonical_text,
+                        psalm.verse_count,
+                        psalm.completeness.value,
+                    ),
+                )
+                conn.executemany(
+                    """
+                    INSERT INTO psalm_verses(psalm_id, verse_number, canonical_text)
+                    VALUES (?, ?, ?)
+                    """,
+                    [
+                        (psalm.id, verse.verse_number, verse.canonical_text)
+                        for verse in psalm.verses
+                    ],
+                )
+                conn.executemany(
+                    """
+                    INSERT INTO passages(
+                        id, psalm_id, translation_id, psalm_number, start_verse, end_verse,
+                        canonical_text, sequence_number, kind, segmentation_policy_version
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        (
+                            passage.id,
+                            passage.psalm_id,
+                            passage.translation_id,
+                            passage.psalm_number,
+                            passage.start_verse,
+                            passage.end_verse,
+                            passage.canonical_text,
+                            passage.sequence_number,
+                            passage.kind.value,
+                            passage.segmentation_policy_version,
+                        )
+                        for passage in passages
+                    ],
+                )
+        except sqlite3.IntegrityError as exc:
+            if "psalms.translation_id, psalms.psalm_number" in str(exc) or "psalms.id" in str(exc):
+                raise PsalmAlreadyExistsError(
+                    f"Psalm already exists: {psalm.translation_id} Psalm {psalm.psalm_number}"
+                ) from exc
+            raise PassageAlreadyExistsError(
+                "Generated Psalm passages conflict with existing data"
+            ) from exc
+
+    def add_partial_psalm_passage(self, passage: Passage) -> Passage:
+        with self._db.open_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = conn.execute(
+                    """
+                    SELECT completeness
+                    FROM psalms
+                    WHERE id = ?
+                    LIMIT 1
+                    """,
+                    (passage.psalm_id,),
+                ).fetchone()
+                if row is None:
+                    conn.execute(
+                        """
+                        INSERT INTO psalms(
+                            id,
+                            translation_id,
+                            psalm_number,
+                            canonical_text,
+                            verse_count,
+                            completeness
+                        ) VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            passage.psalm_id,
+                            passage.translation_id,
+                            passage.psalm_number,
+                            passage.canonical_text,
+                            passage.end_verse - passage.start_verse + 1,
+                            PsalmCompleteness.PARTIAL.value,
+                        ),
+                    )
+                elif str(row["completeness"]) != PsalmCompleteness.PARTIAL.value:
+                    raise PsalmSegmentationConflictError(
+                        f"Psalm {passage.translation_id} "
+                        f"{passage.psalm_number} is already complete."
+                    )
+
+                overlapping = conn.execute(
+                    """
+                    SELECT 1
+                    FROM passages
+                    WHERE psalm_id = ?
+                      AND kind = ?
+                      AND start_verse <= ?
+                      AND end_verse >= ?
+                    LIMIT 1
+                    """,
+                    (
+                        passage.psalm_id,
+                        PassageKind.SECTION.value,
+                        passage.end_verse,
+                        passage.start_verse,
+                    ),
+                ).fetchone()
+                if overlapping is not None:
+                    raise PsalmSegmentationConflictError(
+                        "Manual passage import cannot overlap an existing "
+                        "passage in the same Psalm."
+                    )
+
+                next_sequence_row = conn.execute(
+                    """
+                    SELECT COALESCE(MAX(sequence_number), 0) + 1 AS next_sequence
+                    FROM passages
+                    WHERE psalm_id = ? AND kind = ?
+                    """,
+                    (passage.psalm_id, PassageKind.SECTION.value),
+                ).fetchone()
+                next_sequence = int(next_sequence_row["next_sequence"]) if next_sequence_row else 1
+                persisted = replace(passage, sequence_number=next_sequence)
+                conn.execute(
+                    """
+                    INSERT INTO passages(
+                        id, psalm_id, translation_id, psalm_number, start_verse, end_verse,
+                        canonical_text, sequence_number, kind, segmentation_policy_version
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        persisted.id,
+                        persisted.psalm_id,
+                        persisted.translation_id,
+                        persisted.psalm_number,
+                        persisted.start_verse,
+                        persisted.end_verse,
+                        persisted.canonical_text,
+                        persisted.sequence_number,
+                        persisted.kind.value,
+                        persisted.segmentation_policy_version,
+                    ),
+                )
+                summary = conn.execute(
+                    """
+                    SELECT
+                        COALESCE(SUM(end_verse - start_verse + 1), 0) AS verse_count,
+                        (
+                            SELECT group_concat(item.canonical_text, char(10))
+                            FROM (
+                                SELECT canonical_text
+                                FROM passages ordered
+                                WHERE ordered.psalm_id = ?
+                                  AND ordered.kind = ?
+                                ORDER BY ordered.sequence_number ASC, ordered.id ASC
+                            ) item
+                        ) AS canonical_text
+                    FROM passages
+                    WHERE psalm_id = ? AND kind = ?
+                    """,
+                    (
+                        passage.psalm_id,
+                        PassageKind.SECTION.value,
+                        passage.psalm_id,
+                        PassageKind.SECTION.value,
+                    ),
+                ).fetchone()
+                conn.execute(
+                    """
+                    UPDATE psalms
+                    SET canonical_text = ?, verse_count = ?, completeness = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        (
+                            str(summary["canonical_text"])
+                            if summary and summary["canonical_text"]
+                            else ""
+                        ),
+                        int(summary["verse_count"]) if summary else 0,
+                        PsalmCompleteness.PARTIAL.value,
+                        passage.psalm_id,
+                    ),
+                )
+            except sqlite3.Error:
+                conn.rollback()
+                raise
+            conn.commit()
+            return persisted
+
+    def get_by_id(self, psalm_id: str) -> Psalm | None:
+        with self._db.open_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT id, translation_id, psalm_number, canonical_text, verse_count, completeness
+                FROM psalms
+                WHERE id = ?
+                """,
+                (psalm_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            verses = self._load_verses(conn, psalm_id)
+        return _row_to_psalm(row, verses)
+
+    def get_by_translation_and_number(self, translation_id: str, psalm_number: int) -> Psalm | None:
+        with self._db.open_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT id, translation_id, psalm_number, canonical_text, verse_count, completeness
+                FROM psalms
+                WHERE translation_id = ? AND psalm_number = ?
+                LIMIT 1
+                """,
+                (translation_id, psalm_number),
+            ).fetchone()
+            if row is None:
+                return None
+            verses = self._load_verses(conn, str(row["id"]))
+        return _row_to_psalm(row, verses)
+
+    def list_by_number(self, psalm_number: int) -> list[Psalm]:
+        with self._db.open_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, translation_id, psalm_number, canonical_text, verse_count, completeness
+                FROM psalms
+                WHERE psalm_number = ?
+                ORDER BY translation_id ASC
+                """,
+                (psalm_number,),
+            ).fetchall()
+            psalm_ids = [str(row["id"]) for row in rows]
+            verse_map = self._load_verses_for_psalms(conn, tuple(psalm_ids))
+        return [_row_to_psalm(row, verse_map.get(str(row["id"]), ())) for row in rows]
+
+    def list_all(self) -> list[Psalm]:
+        with self._db.open_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, translation_id, psalm_number, canonical_text, verse_count, completeness
+                FROM psalms
+                ORDER BY psalm_number ASC, translation_id ASC
+                """
+            ).fetchall()
+            psalm_ids = [str(row["id"]) for row in rows]
+            verse_map = self._load_verses_for_psalms(conn, tuple(psalm_ids))
+        return [_row_to_psalm(row, verse_map.get(str(row["id"]), ())) for row in rows]
+
+    def _load_verses(self, conn: sqlite3.Connection, psalm_id: str) -> tuple[PsalmVerse, ...]:
+        rows = conn.execute(
+            """
+            SELECT verse_number, canonical_text
+            FROM psalm_verses
+            WHERE psalm_id = ?
+            ORDER BY verse_number ASC
+            """,
+            (psalm_id,),
+        ).fetchall()
+        return tuple(
+            PsalmVerse(
+                verse_number=int(row["verse_number"]),
+                canonical_text=str(row["canonical_text"]),
+            )
+            for row in rows
+        )
+
+    def _load_verses_for_psalms(
+        self,
+        conn: sqlite3.Connection,
+        psalm_ids: tuple[str, ...],
+    ) -> dict[str, tuple[PsalmVerse, ...]]:
+        if not psalm_ids:
+            return {}
+        placeholders = ", ".join("?" for _ in psalm_ids)
+        rows = conn.execute(
+            f"""
+            SELECT psalm_id, verse_number, canonical_text
+            FROM psalm_verses
+            WHERE psalm_id IN ({placeholders})
+            ORDER BY psalm_id ASC, verse_number ASC
+            """,
+            psalm_ids,
+        ).fetchall()
+        verse_map: dict[str, list[PsalmVerse]] = {psalm_id: [] for psalm_id in psalm_ids}
+        for row in rows:
+            verse_map[str(row["psalm_id"])].append(
+                PsalmVerse(
+                    verse_number=int(row["verse_number"]),
+                    canonical_text=str(row["canonical_text"]),
+                )
+            )
+        return {key: tuple(value) for key, value in verse_map.items()}
+
+
+class SqlitePsalmLearningPlanRepository:
+    def __init__(self, database: SqliteDatabase) -> None:
+        self._db = database
+
+    def get_by_psalm_id(self, psalm_id: str) -> PsalmLearningPlan | None:
+        with self._db.open_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    psalm_id,
+                    status,
+                    active_passage_id,
+                    started_at,
+                    updated_at,
+                    completed_at,
+                    version
+                FROM psalm_learning_plans
+                WHERE psalm_id = ?
+                LIMIT 1
+                """,
+                (psalm_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return PsalmLearningPlan(
+            psalm_id=str(row["psalm_id"]),
+            status=PsalmLearningStatus(str(row["status"])),
+            active_passage_id=str(row["active_passage_id"]) if row["active_passage_id"] else None,
+            started_at=_str_to_dt(str(row["started_at"])) or datetime.now(UTC),
+            updated_at=_str_to_dt(str(row["updated_at"])) or datetime.now(UTC),
+            completed_at=_str_to_dt(row["completed_at"]),
+            version=int(row["version"]),
+        )
+
+    def upsert(self, plan: PsalmLearningPlan, expected_version: int | None = None) -> None:
+        with self._db.open_connection() as conn, conn:
+            if expected_version is None:
+                conn.execute(
+                    """
+                    INSERT INTO psalm_learning_plans(
+                        psalm_id,
+                        status,
+                        active_passage_id,
+                        started_at,
+                        updated_at,
+                        completed_at,
+                        version
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(psalm_id) DO UPDATE SET
+                        status = excluded.status,
+                        active_passage_id = excluded.active_passage_id,
+                        started_at = excluded.started_at,
+                        updated_at = excluded.updated_at,
+                        completed_at = excluded.completed_at,
+                        version = excluded.version
+                    """,
+                    (
+                        plan.psalm_id,
+                        plan.status.value,
+                        plan.active_passage_id,
+                        _dt_to_str(plan.started_at),
+                        _dt_to_str(plan.updated_at),
+                        _dt_to_str(plan.completed_at),
+                        plan.version,
+                    ),
+                )
+                return
+
+            result = conn.execute(
+                """
+                UPDATE psalm_learning_plans
+                SET status = ?, active_passage_id = ?, started_at = ?, updated_at = ?,
+                    completed_at = ?, version = ?
+                WHERE psalm_id = ? AND version = ?
+                """,
+                (
+                    plan.status.value,
+                    plan.active_passage_id,
+                    _dt_to_str(plan.started_at),
+                    _dt_to_str(plan.updated_at),
+                    _dt_to_str(plan.completed_at),
+                    plan.version,
+                    plan.psalm_id,
+                    expected_version,
+                ),
+            )
+            if result.rowcount == 1:
+                return
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO psalm_learning_plans(
+                        psalm_id,
+                        status,
+                        active_passage_id,
+                        started_at,
+                        updated_at,
+                        completed_at,
+                        version
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        plan.psalm_id,
+                        plan.status.value,
+                        plan.active_passage_id,
+                        _dt_to_str(plan.started_at),
+                        _dt_to_str(plan.updated_at),
+                        _dt_to_str(plan.completed_at),
+                        plan.version,
+                    ),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise PersistenceConflictError(
+                    "Psalm learning plan changed during update; retry the operation."
+                ) from exc
+
+    def list_all(self) -> list[PsalmLearningPlan]:
+        with self._db.open_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    psalm_id,
+                    status,
+                    active_passage_id,
+                    started_at,
+                    updated_at,
+                    completed_at,
+                    version
+                FROM psalm_learning_plans
+                ORDER BY started_at ASC
+                """
+            ).fetchall()
+        return [
+            PsalmLearningPlan(
+                psalm_id=str(row["psalm_id"]),
+                status=PsalmLearningStatus(str(row["status"])),
+                active_passage_id=(
+                    str(row["active_passage_id"]) if row["active_passage_id"] else None
+                ),
+                started_at=_str_to_dt(str(row["started_at"])) or datetime.now(UTC),
+                updated_at=_str_to_dt(str(row["updated_at"])) or datetime.now(UTC),
+                completed_at=_str_to_dt(row["completed_at"]),
+                version=int(row["version"]),
+            )
+            for row in rows
+        ]
+
+
 class SqlitePassageRepository:
     def __init__(self, database: SqliteDatabase) -> None:
         self._db = database
@@ -150,16 +624,21 @@ class SqlitePassageRepository:
                 conn.execute(
                     """
                     INSERT INTO passages(
-                        id, translation_id, psalm_number, start_verse, end_verse, canonical_text
-                    ) VALUES (?, ?, ?, ?, ?, ?)
+                        id, psalm_id, translation_id, psalm_number, start_verse, end_verse,
+                        canonical_text, sequence_number, kind, segmentation_policy_version
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         passage.id,
+                        passage.psalm_id,
                         passage.translation_id,
                         passage.psalm_number,
                         passage.start_verse,
                         passage.end_verse,
                         passage.canonical_text,
+                        passage.sequence_number,
+                        passage.kind.value,
+                        passage.segmentation_policy_version,
                     ),
                 )
         except sqlite3.IntegrityError as exc:
@@ -169,48 +648,73 @@ class SqlitePassageRepository:
         with self._db.open_connection() as conn:
             row = conn.execute(
                 """
-                SELECT id, translation_id, psalm_number, start_verse, end_verse, canonical_text
+                SELECT id, psalm_id, translation_id, psalm_number, start_verse, end_verse,
+                       canonical_text, sequence_number, kind, segmentation_policy_version
                 FROM passages
                 WHERE id = ?
                 """,
                 (passage_id,),
             ).fetchone()
-        if row is None:
-            return None
-        return Passage(
-            id=str(row["id"]),
-            translation_id=str(row["translation_id"]),
-            psalm_number=int(row["psalm_number"]),
-            start_verse=int(row["start_verse"]),
-            end_verse=int(row["end_verse"]),
-            canonical_text=str(row["canonical_text"]),
-        )
+        return _row_to_passage(row) if row is not None else None
 
     def list_all(self) -> list[Passage]:
         with self._db.open_connection() as conn:
             rows = conn.execute(
                 """
-                SELECT id, translation_id, psalm_number, start_verse, end_verse, canonical_text
+                SELECT id, psalm_id, translation_id, psalm_number, start_verse, end_verse,
+                       canonical_text, sequence_number, kind, segmentation_policy_version
                 FROM passages
-                ORDER BY psalm_number, start_verse, end_verse, id
+                ORDER BY psalm_number, translation_id, sequence_number, id
                 """
             ).fetchall()
-        return [
-            Passage(
-                id=str(row["id"]),
-                translation_id=str(row["translation_id"]),
-                psalm_number=int(row["psalm_number"]),
-                start_verse=int(row["start_verse"]),
-                end_verse=int(row["end_verse"]),
-                canonical_text=str(row["canonical_text"]),
-            )
-            for row in rows
-        ]
+        return [_row_to_passage(row) for row in rows]
 
     def count_all(self) -> int:
         with self._db.open_connection() as conn:
-            row = conn.execute("SELECT COUNT(*) AS n FROM passages").fetchone()
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM passages WHERE kind = 'section'"
+            ).fetchone()
         return int(row["n"]) if row is not None else 0
+
+    def list_by_psalm(self, psalm_id: str, kind: PassageKind | None = None) -> list[Passage]:
+        with self._db.open_connection() as conn:
+            if kind is None:
+                rows = conn.execute(
+                    """
+                    SELECT id, psalm_id, translation_id, psalm_number, start_verse, end_verse,
+                           canonical_text, sequence_number, kind, segmentation_policy_version
+                    FROM passages
+                    WHERE psalm_id = ?
+                    ORDER BY sequence_number ASC, id ASC
+                    """,
+                    (psalm_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT id, psalm_id, translation_id, psalm_number, start_verse, end_verse,
+                           canonical_text, sequence_number, kind, segmentation_policy_version
+                    FROM passages
+                    WHERE psalm_id = ? AND kind = ?
+                    ORDER BY sequence_number ASC, id ASC
+                    """,
+                    (psalm_id, kind.value),
+                ).fetchall()
+        return [_row_to_passage(row) for row in rows]
+
+    def get_consolidation_passage(self, psalm_id: str) -> Passage | None:
+        with self._db.open_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT id, psalm_id, translation_id, psalm_number, start_verse, end_verse,
+                       canonical_text, sequence_number, kind, segmentation_policy_version
+                FROM passages
+                WHERE psalm_id = ? AND kind = ?
+                LIMIT 1
+                """,
+                (psalm_id, PassageKind.CONSOLIDATION.value),
+            ).fetchone()
+        return _row_to_passage(row) if row is not None else None
 
 
 class SqliteLearningSessionRepository:
@@ -530,8 +1034,40 @@ class SqliteRecitationCommitter:
                 )
 
 
+def _row_to_psalm(row: sqlite3.Row, verses: tuple[PsalmVerse, ...]) -> Psalm:
+    return Psalm(
+        id=str(row["id"]),
+        translation_id=str(row["translation_id"]),
+        psalm_number=int(row["psalm_number"]),
+        canonical_text=str(row["canonical_text"]),
+        verse_count=int(row["verse_count"]),
+        completeness=PsalmCompleteness(str(row["completeness"])),
+        verses=verses,
+    )
+
+
+def _row_to_passage(row: sqlite3.Row) -> Passage:
+    return Passage(
+        id=str(row["id"]),
+        psalm_id=str(row["psalm_id"]),
+        translation_id=str(row["translation_id"]),
+        psalm_number=int(row["psalm_number"]),
+        start_verse=int(row["start_verse"]),
+        end_verse=int(row["end_verse"]),
+        canonical_text=str(row["canonical_text"]),
+        sequence_number=int(row["sequence_number"]),
+        kind=PassageKind(str(row["kind"])),
+        segmentation_policy_version=(
+            str(row["segmentation_policy_version"])
+            if row["segmentation_policy_version"] is not None
+            else None
+        ),
+    )
+
+
 def _expected_success_count_before_attempt(
-    attempt: RecitationAttempt, session: LearningSession
+    attempt: RecitationAttempt,
+    session: LearningSession,
 ) -> int:
     if attempt.result is RecitationResult.PASS:
         return max(0, session.successful_blank_recitations - 1)
