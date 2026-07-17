@@ -12,12 +12,15 @@ from psalter.application.errors import (
     ScriptureProviderUnavailableError,
     TranslationCatalogUnavailableError,
 )
+from psalter.logging import debug_event, get_logger
 from psalter.ports.scripture_catalog_provider import (
     ImportedPsalm,
     ImportedPsalmVerse,
     ScriptureCatalogProvider,
     TranslationInfo,
 )
+
+logger = get_logger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,13 +37,27 @@ class HelloAoScriptureCatalogProvider(ScriptureCatalogProvider):
         last_error: Exception | None = None
         for endpoint in endpoints:
             try:
+                debug_event(logger, "translation_catalog_fetch_started", endpoint=endpoint)
                 payload = self._fetch_json(endpoint)
-                return _parse_translations(payload)
+                translations = _parse_translations(payload)
+                debug_event(
+                    logger,
+                    "translation_catalog_fetch_completed",
+                    endpoint=endpoint,
+                    translation_count=len(translations),
+                )
+                return translations
             except (
                 TranslationCatalogUnavailableError,
                 ScriptureProviderUnavailableError,
                 PsalmPayloadInvalidError,
             ) as exc:
+                debug_event(
+                    logger,
+                    "translation_catalog_fetch_failed",
+                    endpoint=endpoint,
+                    error_type=type(exc).__name__,
+                )
                 last_error = exc
         if last_error is not None:
             raise last_error
@@ -48,21 +65,44 @@ class HelloAoScriptureCatalogProvider(ScriptureCatalogProvider):
 
     def fetch_psalm(self, translation_id: str, psalm_number: int) -> ImportedPsalm:
         path = f"/{quote(translation_id)}/PSA/{psalm_number}.json"
+        debug_event(
+            logger,
+            "psalm_fetch_started",
+            translation_id=translation_id,
+            psalm_number=psalm_number,
+        )
         try:
             payload = self._fetch_json(path)
         except (ScriptureProviderUnavailableError, TranslationCatalogUnavailableError) as exc:
+            debug_event(
+                logger,
+                "psalm_fetch_failed",
+                translation_id=translation_id,
+                psalm_number=psalm_number,
+                error_type=type(exc).__name__,
+            )
             raise PsalmDownloadFailedError(
                 f"Failed to import Psalm {psalm_number} from {translation_id}: {exc}"
             ) from exc
-        return _parse_psalm_payload(
+        imported = _parse_psalm_payload(
             translation_id=translation_id, psalm_number=psalm_number, payload=payload
         )
+        debug_event(
+            logger,
+            "psalm_fetch_completed",
+            translation_id=translation_id,
+            psalm_number=psalm_number,
+            verse_count=len(imported.verses),
+        )
+        return imported
 
     def _fetch_json(self, path: str) -> object:
         url = f"{self.base_url.rstrip('/')}{path}"
+        debug_event(logger, "http_request_started", url=url, timeout_seconds=self.timeout_seconds)
         try:
             with urlopen(url, timeout=self.timeout_seconds) as response:
                 status = getattr(response, "status", 200)
+                debug_event(logger, "http_response_received", url=url, status=int(status))
                 if int(status) >= 400:
                     raise TranslationCatalogUnavailableError(
                         f"Scripture provider returned HTTP {status}."
@@ -85,7 +125,7 @@ class HelloAoScriptureCatalogProvider(ScriptureCatalogProvider):
 @dataclass(frozen=True, slots=True)
 class MockScriptureCatalogProvider(ScriptureCatalogProvider):
     def list_translations(self) -> tuple[TranslationInfo, ...]:
-        return (
+        translations = (
             TranslationInfo(
                 id="BSB", name="Berean Standard Bible", language="en", supports_psalms=True
             ),
@@ -96,6 +136,8 @@ class MockScriptureCatalogProvider(ScriptureCatalogProvider):
                 id="WEB", name="World English Bible", language="en", supports_psalms=True
             ),
         )
+        debug_event(logger, "mock_translation_catalog_returned", translation_count=len(translations))
+        return translations
 
     def fetch_psalm(self, translation_id: str, psalm_number: int) -> ImportedPsalm:
         verses = tuple(
@@ -104,6 +146,13 @@ class MockScriptureCatalogProvider(ScriptureCatalogProvider):
                 canonical_text=f"{translation_id} Psalm {psalm_number}:{index}",
             )
             for index in range(1, 4)
+        )
+        debug_event(
+            logger,
+            "mock_psalm_returned",
+            translation_id=translation_id,
+            psalm_number=psalm_number,
+            verse_count=len(verses),
         )
         return ImportedPsalm(
             translation_id=translation_id, psalm_number=psalm_number, verses=verses
