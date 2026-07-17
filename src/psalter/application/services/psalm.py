@@ -40,57 +40,11 @@ class PsalmService:
             raise PsalmAlreadyExistsError(
                 f"Psalm already exists: {translation_id} Psalm {psalm_number}"
             )
-        try:
-            psalm_verses = tuple(
-                PsalmVerse(verse_number=verse_number, canonical_text=text)
-                for verse_number, text in verses
-            )
-            canonical_text = "\n".join(verse.canonical_text for verse in psalm_verses).strip()
-            psalm = Psalm(
-                id=psalm_id,
-                translation_id=translation_id.strip(),
-                psalm_number=psalm_number,
-                canonical_text=canonical_text,
-                verse_count=len(psalm_verses),
-                completeness=PsalmCompleteness.COMPLETE,
-                verses=psalm_verses,
-            )
-        except InvariantViolationError as exc:
-            raise InvalidPassageError(str(exc)) from exc
-
-        sections = self._segmentation_policy.segment(psalm_verses)
-        passages = tuple(
-            Passage(
-                id=build_passage_id(
-                    translation_id=translation_id,
-                    psalm_number=psalm_number,
-                    start_verse=definition.start_verse,
-                    end_verse=definition.end_verse,
-                ),
-                psalm_id=psalm.id,
-                translation_id=psalm.translation_id,
-                psalm_number=psalm.psalm_number,
-                start_verse=definition.start_verse,
-                end_verse=definition.end_verse,
-                canonical_text=definition.canonical_text,
-                sequence_number=definition.sequence_number,
-                kind=PassageKind.SECTION,
-                segmentation_policy_version=self._segmentation_policy.version,
-            )
-            for definition in sections
-        ) + (
-            Passage(
-                id=f"{psalm.id}-consolidation",
-                psalm_id=psalm.id,
-                translation_id=psalm.translation_id,
-                psalm_number=psalm.psalm_number,
-                start_verse=1,
-                end_verse=psalm.verse_count,
-                canonical_text=psalm.canonical_text,
-                sequence_number=len(sections) + 1,
-                kind=PassageKind.CONSOLIDATION,
-                segmentation_policy_version=self._segmentation_policy.version,
-            ),
+        psalm, passages = build_complete_psalm_bundle(
+            translation_id=translation_id,
+            psalm_number=psalm_number,
+            verses=verses,
+            segmentation_policy=self._segmentation_policy,
         )
         self._psalms.add_psalm_bundle(psalm=psalm, passages=passages)
         return _to_detail_dto(psalm)
@@ -129,6 +83,69 @@ def _normalized_translation_id(translation_id: str) -> str:
     if not normalized:
         raise InvalidPassageError("Translation ID must contain at least one letter or digit")
     return normalized
+
+
+def build_complete_psalm_bundle(
+    *,
+    translation_id: str,
+    psalm_number: int,
+    verses: tuple[tuple[int, str], ...],
+    segmentation_policy: PsalmSegmentationPolicy,
+) -> tuple[Psalm, tuple[Passage, ...]]:
+    psalm_id = build_psalm_id(translation_id=translation_id, psalm_number=psalm_number)
+    try:
+        psalm_verses = tuple(
+            PsalmVerse(verse_number=verse_number, canonical_text=text)
+            for verse_number, text in verses
+        )
+        canonical_text = "\n".join(verse.canonical_text for verse in psalm_verses).strip()
+        psalm = Psalm(
+            id=psalm_id,
+            translation_id=translation_id.strip(),
+            psalm_number=psalm_number,
+            canonical_text=canonical_text,
+            verse_count=len(psalm_verses),
+            completeness=PsalmCompleteness.COMPLETE,
+            verses=psalm_verses,
+        )
+    except InvariantViolationError as exc:
+        raise InvalidPassageError(str(exc)) from exc
+
+    sections = segmentation_policy.segment(psalm_verses)
+    passages = tuple(
+        Passage(
+            id=build_passage_id(
+                translation_id=translation_id,
+                psalm_number=psalm_number,
+                start_verse=definition.start_verse,
+                end_verse=definition.end_verse,
+            ),
+            psalm_id=psalm.id,
+            translation_id=psalm.translation_id,
+            psalm_number=psalm.psalm_number,
+            start_verse=definition.start_verse,
+            end_verse=definition.end_verse,
+            canonical_text=definition.canonical_text,
+            sequence_number=definition.sequence_number,
+            kind=PassageKind.SECTION,
+            segmentation_policy_version=segmentation_policy.version,
+        )
+        for definition in sections
+    ) + (
+        Passage(
+            id=f"{psalm.id}-consolidation",
+            psalm_id=psalm.id,
+            translation_id=psalm.translation_id,
+            psalm_number=psalm.psalm_number,
+            start_verse=1,
+            end_verse=psalm.verse_count,
+            canonical_text=psalm.canonical_text,
+            sequence_number=len(sections) + 1,
+            kind=PassageKind.CONSOLIDATION,
+            segmentation_policy_version=segmentation_policy.version,
+        ),
+    )
+    return psalm, passages
 
 
 def _to_summary_dto(psalm: Psalm) -> PsalmSummaryDTO:

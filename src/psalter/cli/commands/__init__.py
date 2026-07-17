@@ -4,6 +4,7 @@ from psalter.cli.commands.passage import register as register_passage
 from psalter.cli.commands.progress import register as register_progress
 from psalter.cli.commands.psalm import register as register_psalm
 from psalter.cli.commands.review import register as register_review
+from psalter.cli.commands.settings import register as register_settings
 
 __all__ = [
     "register_init",
@@ -12,4 +13,5 @@ __all__ = [
     "register_psalm",
     "register_progress",
     "register_review",
+    "register_settings",
 ]

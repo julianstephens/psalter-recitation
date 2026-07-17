@@ -1,5 +1,10 @@
 from pathlib import Path
 
+from psalter.adapters.persistence.installation_sqlite import (
+    SqliteCatalogImportProgressRepository,
+    SqliteInstallationSettingsRepository,
+    SqlitePsalmCatalogCommitter,
+)
 from psalter.adapters.persistence.sqlite import (
     SqliteDatabase,
     SqliteLearningSessionRepository,
@@ -13,10 +18,13 @@ from psalter.adapters.persistence.sqlite import (
 )
 
 __all__ = [
+    "SqliteCatalogImportProgressRepository",
     "SqliteDatabase",
+    "SqliteInstallationSettingsRepository",
     "SqliteLearningSessionRepository",
     "SqliteMigrator",
     "SqlitePassageRepository",
+    "SqlitePsalmCatalogCommitter",
     "SqlitePsalmLearningPlanRepository",
     "SqlitePsalmRepository",
     "SqliteRecitationCommitter",

@@ -36,6 +36,7 @@ from psalter.application.errors import (
     WhisperProcessFailedError,
 )
 from psalter.bootstrap import Container, build_container
+from psalter.cli.readiness import require_ready
 from psalter.config import build_config
 from psalter.domain.learning import LearningPhase
 from psalter.domain.passage import PassageKind
@@ -55,6 +56,7 @@ def register(app: typer.Typer) -> None:
     ) -> None:
         container = build_container(build_config(data_dir=data_dir))
         container.migrator.apply_pending()
+        require_ready(container)
         try:
             container.psalm_learning_service.begin_or_resume(
                 psalm_number=psalm_number,

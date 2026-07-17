@@ -6,6 +6,7 @@ from typing import Annotated
 import typer
 
 from psalter.bootstrap import build_container
+from psalter.cli.readiness import require_ready
 from psalter.config import build_config
 
 
@@ -19,6 +20,7 @@ def register(app: typer.Typer) -> None:
     ) -> None:
         container = build_container(build_config(data_dir=data_dir))
         container.migrator.apply_pending()
+        require_ready(container)
         due = container.review_service.get_due_psalm_reviews()
         if not due:
             typer.echo("No reviews due.")

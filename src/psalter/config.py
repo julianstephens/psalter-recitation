@@ -29,6 +29,9 @@ class AppConfig:
     data_dir: Path
     db_path: Path
     default_translation_id: str | None
+    scripture_provider: str
+    scripture_provider_base_url: str
+    scripture_provider_timeout_seconds: float
     whisper_cpp: WhisperCppConfig | None
     recorder: FfmpegRecorderConfig | None
 
@@ -95,6 +98,14 @@ def build_config(data_dir: Path | None = None) -> AppConfig:
         data_dir=root,
         db_path=root / "psalter.db",
         default_translation_id=os.getenv("PSALTER_DEFAULT_TRANSLATION"),
+        scripture_provider=os.getenv("PSALTER_SCRIPTURE_PROVIDER", "helloao").strip().casefold(),
+        scripture_provider_base_url=os.getenv(
+            "PSALTER_SCRIPTURE_PROVIDER_BASE_URL",
+            "https://bible.helloao.org/api",
+        ).strip(),
+        scripture_provider_timeout_seconds=float(
+            os.getenv("PSALTER_SCRIPTURE_PROVIDER_TIMEOUT_SECONDS", "20")
+        ),
         whisper_cpp=whisper_cpp,
         recorder=recorder,
     )

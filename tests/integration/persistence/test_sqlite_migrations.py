@@ -40,6 +40,7 @@ def test_sqlite_migrations_are_idempotent(tmp_path: Path) -> None:
         "001_initial.sql",
         "002_learning_vertical_slice.sql",
         "003_psalm_first.sql",
+        "004_installation_settings.sql",
     ]
     assert second == []
 
